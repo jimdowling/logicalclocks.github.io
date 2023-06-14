@@ -143,10 +143,10 @@ pointer-events: initial;
                   <div class="rec_frame_main-white">
                     <div class="name_item_02"><a href="./concepts/fs/feature_view/fv_overview/">Feature Views</a></div>
                     <div class="rec_frame_main-white dotted">
-                      <div class="name_item_02 non-bold"><a href="./concepts/fs/feature_view/offline_api/">Training Data</a></div>
+                      <div class="name_item_02 non-bold"><a href="./concepts/fs/feature_view/offline_api/">Batch API</a></div>
                     </div>
                     <div class="rec_frame_main-white dotted">
-                      <div class="name_item_02 non-bold"><a href="./concepts/fs/feature_view/online_api/">Feature Vectors</a></div>
+                      <div class="name_item_02 non-bold"><a href="./concepts/fs/feature_view/online_api/">Real-time API</a></div>
                     </div>
                   </div>
                 </div>

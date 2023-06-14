@@ -2,7 +2,7 @@
 <a name="what"></a>
 ## What is Hopsworks Feature Store?
 
-Hopsworks and its Feature Store are an open source data-intensive AI platform used for the development and operation of machine learning models at scale. The Hopsworks Feature Store provides the HSFS API to enable clients to write features to feature groups in the feature store, and to read features from feature views - either through a low latency Online API to retrieve pre-computed features for operational models or through a high throughput, latency insensitive Offline API, used to create training data and to retrieve batch data for scoring.
+Hopsworks Feature Store is a data platform that manages features for model training and model inference. The Hopsworks Feature Store provides the HSFS API to enable clients to write features to feature groups in the feature store. In Hopsworks, you read from the feature using a feature view, a selection of features typically used as input to a model for training and inference. The feature view provides both a real-time low latency API to retrieve pre-computed features for operational models as well as a high throughput batch API, used to create training data and to retrieve batch inference data.
 
 <img src="../../assets/images/concepts/fs/architecture.svg">
 
@@ -24,3 +24,14 @@ You write to feature groups with a feature pipeline program. The program can be 
 
 You read from views on top of the feature groups, called feature views. That is, a feature view does not store feature data, but is a logical grouping of features. Typically, you define a feature view because you want to train/deploy a model with exactly those features in the feature view. Feature views enable the reuse of feature data from different feature groups across different models.
 
+##ML Pipelines
+
+ML Systems built on a feature store decompose the problem of transforming input data into models and predictions into 3 different ML pipelines
+
+ - feature pipelines transform raw data into features using aggregations, binning, dimensionality reduction, and so on. The output are features (and labels/targets) that are stored in feature groups.
+ - a training pipeline trains a model using a feature view to retrieve a consistent snapshot of split training data. The output is a model that is stored in a model registry.
+ - an inference pipeline takes a trained model (from a model registry) and new input features, and calls predict on the model using the input features. The output is predictions that are consumed by an AI-enabled applicationn.
+
+<img src="../../assets/images/concepts/fs/ml-pipelines-ml-system.svg">
+
+In the above figure, we can see the feature pipeline(s), training pipeline(s), and batch/online inference pipeline(s), and how they read and write to the feature store.
