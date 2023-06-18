@@ -19,10 +19,13 @@ nav:
       - Hopsworks Platform: concepts/hopsworks.md
       - MLOps Dictionary ↗: https://www.hopsworks.ai/mlops-dictionary?utm_source=web&utm_medium=docs
       - Feature Store:
-          - Overview: 
-              - ML System Overview: concepts/fs/index.md
-              - Project Layout: concepts/fs/project_layout.md
-          - Feature Pipelines:
+          - Overview: concepts/fs/index.md
+          - ML Pipelines: 
+              - Overview: concepts/fs/ml_pipelines/overview.md
+              - Python/PySpark: concepts/fs/ml_pipelines/project_layout.md
+              - DBT/SQL: concepts/fs/ml_pipelines/dbt.md
+              - Streaming: concepts/fs/ml_pipelines/streaming.md
+          - Feature Groups:
               - Overview: concepts/fs/feature_group/fg_overview.md
               - Write APIs: concepts/fs/feature_group/write_apis.md
               - Feature Functions: concepts/fs/feature_group/feature_functions.md
@@ -32,19 +35,15 @@ nav:
               - Data Validation/Stats/Alerts: concepts/fs/feature_group/fg_statistics.md
               - Versioning: concepts/fs/feature_group/versioning.md
               - On-Demand Features: concepts/fs/feature_group/ondemand_features.md
-          - Training Pipelines:
-              - Feature View: 
-                  - Overview: concepts/fs/feature_view/fv_overview.md
-                  - Batch API: concepts/fs/feature_view/offline_api.md
-                  - Declarative Encoding: concepts/fs/feature_view/training_inference_pipelines.md
+          - Feature Views:
+              - Overview: concepts/fs/feature_view/fv_overview.md
+              - Versioning: concepts/fs/feature_view/versioning.md
+              - Training Data: 
+                  - Feature Encoding/Scaling: concepts/fs/feature_view/training_inference_pipelines.md
                   - Statistics: concepts/fs/feature_view/statistics.md
-                  - Versioning: concepts/fs/feature_view/versioning.md
-          - Inference Pipelines:
-              - Feature View: 
-                  - Overview: concepts/fs/feature_view/fv_overview.md
+              - Inference Data:
+                  - Batch Inference API: concepts/fs/feature_view/offline_api.md
                   - Real-Time API: concepts/fs/feature_view/online_api.md
-                  - Declarative Encoding: concepts/fs/feature_view/training_inference_pipelines.md              
-              - On-Demand Features: concepts/fs/feature_group/ondemand_features.md
       - Projects:
           - Governance: concepts/projects/governance.md
           - Data Storage/Sharing: concepts/projects/storage.md

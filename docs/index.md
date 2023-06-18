@@ -17,7 +17,7 @@ hide:
         <div class="enterprise_data">
           <div class="col_heading"><img src="images/icons8-organization.svg" loading="lazy" alt="">
             <div class="head_col">
-              <h2 class="heading_MT">Enterprise Data</h2>
+              <h2 class="heading_MT">Data</h2>
               <h3 class="MT_heading3 green">Feature Engineering</h3>
             </div>
           </div>
@@ -87,7 +87,7 @@ hide:
           <div class="enterprise_data">
             <div class="col_heading">
               <div class="head_col">
-                <h2 class="heading_MT">Enterprise Feature Store</h2>
+                <h2 class="heading_MT">Feature Store</h2>
               </div>
             </div>
           </div>
@@ -95,16 +95,16 @@ hide:
         <div class="center-content">
           <div class="layer_02">
             <div class="round-frame bottom-right">
-              <div class="name_item">Govern &amp; Monitor</div>
+              <div class="name_item">Monitor, Govern</div>
             </div>
             <div class="round-frame top-right">
-              <div class="name_item">Serve</div>
+              <div class="name_item">Training/ Inference Pipelines</div>
             </div>
             <div class="round-frame bottom-left">
-              <div class="name_item">Share </br>&amp; Re-use</div>
+              <div class="name_item">Connect, Share, Reuse</div>
             </div>
             <div class="round-frame top-left">
-              <div class="name_item">Create</div>
+              <div class="name_item">Feature Pipelines</div>
             </div>
             <div class="w-embed">
               <style>
@@ -245,24 +245,24 @@ pointer-events: initial;
     </div>
   </div>
 
-<img src="images/hopsworks-logo-2022.svg" loading="lazy" alt="" class="image_logo_02">
+<!-- <img src="images/hopsworks-logo-2022.svg" loading="lazy" alt="" class="image_logo_02"> -->
 
-Hopsworks is a data platform for ML with a Python-centric Feature Store and MLOps capabilities. Hopsworks is a modular platform. You can use it as a standalone Feature Store, you can use it to manage, govern, and serve your models, and you can even use it to develop and operate feature pipelines and training pipelines. Hopsworks brings collaboration for ML teams, providing a secure, governed platform for developing, managing, and sharing ML assets - features, models, training data, batch scoring data, logs, and more. 
+Hopsworks is a Feature Store for machine learning with additional MLOps capabilities. Hopsworks is a modular platform. You can use Hopsworks as a standalone Feature Store. You can use it to your ML pipelines. You can even manage, govern, and serve your models on Hopsworks.  Hopsworks brings collaboration for ML teams, providing a secure, governed platform for developing, managing, and sharing ML assets - features, models, training data, inference data, logs, monitoring, and more. 
 
 ## Python-Centric Feature Store
-Hopsworks is widely used as a standalone Feature Store. Hopsworks breaks the monolithic model development pipeline into separate feature and training pipelines, enabling both feature reuse and better tested ML assets. You can develop features by building feature pipelines in any Python (or Spark or Flink) environment, either inside or outside Hopsworks. You can use the Python frameworks you are familiar with to build production feature pipelines. You can compute aggregations in Pandas, validate feature data with Great Expectations, reduce your data dimensionality with embeddings and PCA, test your feature logic and features end-to-end with PyTest, and transform your categorical and numerical features with Scikit-Learn, TensorFlow, and PyTorch. You can orchestrate your feature pipelines with your Python framework of choice, including Hopsworks' own Airflow support.
+Hopsworks is widely used as a standalone Feature Store. Hopsworks securely manages and serves your features for training and inference with the highest performance and highest availability guarantees. You can run your feature pipelines in any Python, Spark, SQL, Flink, or Beam environment, or have your feature pipelines run on and managed by Hopsworks. You can use the Python frameworks you are familiar with to build production feature pipelines. You can compute aggregations in Pandas or Polars, validate feature data with Great Expectations, reduce your data dimensionality with embeddings and PCA, test your feature logic and features end-to-end with PyTest, and transform your categorical and numerical features with Scikit-Learn, TensorFlow, and PyTorch. Hopsworks can orchestrate and run your feature pipelines, or you can use any external orchestrator, such as Airflow.
 
-## The Widest Feature Store Capabilities
-Hopsworks Feature Store also supports feature pipelines in PySpark, Spark, Flink, and SQL. Offline features can either be stored in Hopsworks, as Hudi tables on object storage, or in external data lakehouses (Snowflake, Databricks, Redshift, BigQuery, any JDBC-enabled platform) via External Feature Groups. Online features are served by [RonDB](https://www.rondb.com), developed by Hopsworks as the lowest latency, highest throughput, highest availability data store for your features.
+## The Richest Feature Store Capabilities
+Hopsworks Feature Store also supports feature pipelines in PySpark, Spark, Flink, Beam, and SQL. Offline features can either be stored in Hopsworks, as Hudi tables on object storage, or in external data lakehouses (Snowflake, Databricks, Redshift, BigQuery, any JDBC-enabled platform) as External Tables. Online features are served by [RonDB](https://www.rondb.com), developed by Hopsworks as the lowest latency, highest throughput, highest availability  data store for your online features. Hopsworks has built-in support for data validation with Great Expectations, including alerting with email/slack/pagerduty. Hopsworks supports custom metadata for ML assets with schematized tags, free-text search, and lineage. Hopsworks comes with logging and monitoring, with the OpenSearch and Prometheus/Grafana stacks.
 
 ## MLOps on Hopsworks
-Hopsworks provides model serving capabilities through KServe, with additional support for feature/prediction logging to Kafka (also part of Hopsworks), and secure, low-latency model deployments via Istio. Hopsworks also has a Model Registry for KServe, with support for versioning both models and model assets (such as KServe transformers). Hopsworks also includes a vector database to provide similarity search capabilities for embeddings, based on [OpenSearch](./concepts/mlops/opensearch.md).
+Hopsworks provides model serving capabilities through KServe, with support for feature/prediction logging and monitoring, and secure, low-latency model deployments via Istio. Hopsworks also has a Model Registry for KServe, with support for versioning both models and model assets (such as KServe transformers). Hopsworks also includes a vector database (based on [OpenSearch](./concepts/mlops/opensearch.md)) to store embeddings/vectors and provide similarity search.
 
 ## Project-based Multi-Tenancy and Team Collaboration
 Hopsworks provides projects as a secure sandbox in which teams can collaborate and share ML assets. Hopsworks' unique multi-tenant project model even enables sensitive data to be stored in a shared cluster, while still providing fine-grained sharing capabilities for ML assets across project boundaries.  Projects can be used to structure teams so that they have end-to-end responsibility from raw data to managed features and models. Projects can also be used to create development, staging, and production environments for data teams. All ML assets support versioning, lineage, and provenance provide all Hopsworks users with a complete view of the MLOps life cycle, from feature engineering through model serving. 
 
 ## Development and Operations
-Hopsworks provides development tools for Data Science, including conda environments for Python, Jupyter notebooks, jobs, or even notebooks as jobs. You can build production pipelines with the bundled Airflow, and even run ML training pipelines with GPUs in notebooks on Airflow. You can train models on as many GPUs as are installed in a Hopsworks cluster and easily share them among users. You can also run Spark, Spark Streaming, or Flink programs on Hopsworks, with support for elastic workers in the cloud (add/remove workers dynamically).
+Hopsworks provides development tools for Data Science, including conda environments, Jupyter notebooks, and jobs. You can build production pipelines with the bundled orchestrator, and even run ML training pipelines with GPUs. You can train models on as many GPUs as are installed in a Hopsworks cluster and easily share them among users. You can also run Spark, Spark Streaming, or Flink programs on Hopsworks, with support for elastic workers in the cloud (add/remove workers dynamically).
 
 ## Available on any Platform
 Hopsworks is available as a both managed platform in the cloud on AWS, Azure, and GCP, and can be installed on any Linux-based virtual machines (Ubuntu/Redhat compatible), even in air-gapped data centers. Hopsworks is also available as a serverless platform that manages and serves both your features and models.
