@@ -265,7 +265,7 @@ Hopsworks provides projects as a secure sandbox in which teams can collaborate a
 Hopsworks provides development tools for Data Science, including conda environments, Jupyter notebooks, and jobs. You can build production pipelines with the bundled orchestrator, and even run ML training pipelines with GPUs. You can train models on as many GPUs as are installed in a Hopsworks cluster and easily share them among users. You can also run Spark, Spark Streaming, or Flink programs on Hopsworks, with support for elastic workers in the cloud (add/remove workers dynamically).
 
 ## Available on any Platform
-Hopsworks is available as a both managed platform in the cloud on AWS, Azure, and GCP, and can be installed on any Linux-based virtual machines (Ubuntu/Redhat compatible), even in air-gapped data centers. Hopsworks is also available as a serverless platform that manages and serves both your features and models.
+Hopsworks is available as a managed platform in the cloud on AWS, Azure, and GCP, and can also be installed on-premises on Linux-based virtual machines (Ubuntu/Redhat compatible), even in air-gapped data centers. Hopsworks is also available as a serverless platform that manages and serves both your features and models.
 
 ## Join the community
 - Ask questions and give us feedback in the [Hopsworks Community](https://community.hopsworks.ai/)
