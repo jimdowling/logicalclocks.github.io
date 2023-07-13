@@ -22,9 +22,9 @@ nav:
           - Overview: concepts/fs/index.md
           - ML Pipelines: 
               - Overview: concepts/fs/ml_pipelines/overview.md
-              - Python/PySpark: concepts/fs/ml_pipelines/project_layout.md
-              - DBT/SQL: concepts/fs/ml_pipelines/dbt.md
-              - Streaming: concepts/fs/ml_pipelines/streaming.md
+              - Feature Pipelines: concepts/fs/ml_pipelines/feature_pipelines.md
+              - Training Pipelines: concepts/fs/ml_pipelines/training_pipelines.md
+              - Inference Pipelines: concepts/fs/ml_pipelines/inference_pipelines.md
           - Feature Groups:
               - Overview: concepts/fs/feature_group/fg_overview.md
               - Write APIs: concepts/fs/feature_group/write_apis.md
