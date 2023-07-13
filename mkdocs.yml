@@ -63,6 +63,12 @@ nav:
       - user_guides/index.md
       - Feature Store:
           - user_guides/fs/index.md
+          - ML Pipelines:
+              - user_guides/fs/ml_pipelines/index.md
+              - Feature Pipeline: user_guides/fs/ml_pipelines/feature_pipeline.md
+              - Training Pipeline: user_guides/fs/ml_pipelines/training_pipeline.md
+              - Batch Inference Pipeline: user_guides/fs/ml_pipelines/batch_inference_pipeline.md
+              - Online Inference Pipeline: user_guides/fs/ml_pipelines/online_inference_pipeline.md
           - Storage Connector:
               - user_guides/fs/storage_connector/index.md
               - Configuration and Creation:
