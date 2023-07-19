@@ -4,6 +4,7 @@ This section serves to provide guides and examples for the common usage of abstr
 
 - [Create a Feature Group](create.md)
 - [Create an external Feature Group](create_external.md)
+- [Create a Spine Feature Group](create_spine.md)
 - [Data Types and Schema management](data_types.md)
 - [Statistics](statistics.md)
 - [Data Validation](data_validation.md)

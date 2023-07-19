@@ -28,8 +28,6 @@ nav:
           - Feature Groups:
               - Overview: concepts/fs/feature_group/fg_overview.md
               - Write APIs: concepts/fs/feature_group/write_apis.md
-              - Feature Functions: concepts/fs/feature_group/feature_functions.md
-              - Feature Pipelines: concepts/fs/feature_group/feature_pipelines.md
               - External Feature Groups: concepts/fs/feature_group/external_fg.md
               - Spine Group: concepts/fs/feature_group/spine_group.md
               - Data Validation/Stats/Alerts: concepts/fs/feature_group/fg_statistics.md
@@ -69,6 +67,26 @@ nav:
               - Training Pipeline: user_guides/fs/ml_pipelines/training_pipeline.md
               - Batch Inference Pipeline: user_guides/fs/ml_pipelines/batch_inference_pipeline.md
               - Online Inference Pipeline: user_guides/fs/ml_pipelines/online_inference_pipeline.md
+              - Project Layout: user_guides/fs/ml_pipelines/project_layout.md
+          - Feature Group:
+              - user_guides/fs/feature_group/index.md
+              - Create: user_guides/fs/feature_group/create.md
+              - Create External: user_guides/fs/feature_group/create_external.md
+              - Create Spine: user_guides/fs/feature_group/create_spine.md
+              - Data Types and Schema management: user_guides/fs/feature_group/data_types.md
+              - Statistics: user_guides/fs/feature_group/statistics.md
+              - Data Validation: user_guides/fs/feature_group/data_validation.md
+              - Advanced Data Validation: user_guides/fs/feature_group/advanced_data_validation.md
+          - Feature View:
+              - user_guides/fs/feature_view/index.md
+              - Overview: user_guides/fs/feature_view/overview.md
+              - Query: user_guides/fs/feature_view/query.md
+              - Training data: user_guides/fs/feature_view/training-data.md
+              - Batch data: user_guides/fs/feature_view/batch-data.md
+              - Spines: user_guides/fs/feature_view/spine-query.md
+              - Feature vectors: user_guides/fs/feature_view/feature-vectors.md
+              - Transformation Functions: user_guides/fs/feature_view/transformation-function.md
+              - Feature Server: user_guides/fs/feature_view/feature-server.md
           - Storage Connector:
               - user_guides/fs/storage_connector/index.md
               - Configuration and Creation:
@@ -82,23 +100,6 @@ nav:
                   - BigQuery: user_guides/fs/storage_connector/creation/bigquery.md
                   - GCS: user_guides/fs/storage_connector/creation/gcs.md
               - Usage: user_guides/fs/storage_connector/usage.md
-          - Feature Group:
-              - user_guides/fs/feature_group/index.md
-              - Create: user_guides/fs/feature_group/create.md
-              - Create External: user_guides/fs/feature_group/create_external.md
-              - Data Types and Schema management: user_guides/fs/feature_group/data_types.md
-              - Statistics: user_guides/fs/feature_group/statistics.md
-              - Data Validation: user_guides/fs/feature_group/data_validation.md
-              - Advanced Data Validation: user_guides/fs/feature_group/advanced_data_validation.md
-          - Feature View:
-              - user_guides/fs/feature_view/index.md
-              - Overview: user_guides/fs/feature_view/overview.md
-              - Training data: user_guides/fs/feature_view/training-data.md
-              - Batch data: user_guides/fs/feature_view/batch-data.md
-              - Feature vectors: user_guides/fs/feature_view/feature-vectors.md
-              - Query: user_guides/fs/feature_view/query.md
-              - Transformation Functions: user_guides/fs/feature_view/transformation-function.md
-              - Spines: user_guides/fs/feature_view/spine-query.md
           - Compute Engines: user_guides/fs/compute_engines.md
           - Client Integrations:
               - user_guides/integrations/index.md
