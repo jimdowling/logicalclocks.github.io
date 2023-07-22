@@ -17,11 +17,14 @@ Using a feature store in the training pipeline helps to achieve consistency acro
 
 ### Feature Selection and Feature Views
 
-When you want to train a model, you should select the features that will be used by your model (the same features are used in training and inference), along with a label/target if you will train your model with supervised ML.
+<img src="../../../../assets/images/concepts/fs/feature-view-join-tables.svg">
+
+When you want to train a model, you should select the features (from the different feature groups) that will be used by your model (the same features are used in training and inference), along with a label/target if you will train your model with supervised ML.
 
 <img src="../../../../assets/images/concepts/fs/feature-selection.svg">
 
-You start by selecting features from different feature groups and join them together to create a feature view. The feature view is the set of input features and label for your model. You can include extra helper columns (such as the primary key, the event_time, and columns used by inference pipelines when storing predictions in external systems) - but be sure to drop those columns in both training and inference pipelines when creating training data and inference data using the feature view, respectively.
+You start by selecting features from different feature groups and join them together to create a feature view. The feature view is the set of input features and label for your model, along with optional filters for feature values and transformations. You can also include extra helper columns in a feature view that are not features used by the model (such as the primary key, the event_time, and columns used by inference pipelines when storing predictions in external systems) - but be sure to drop those columns when creating training data and inference data using the feature view.
+
 
 ### Feature Encoding/Scaling
 If you have categorical features, you may need to encode them (e.g., using one-hot encoding) before they are input to the model. Similarly, if you are using gradient-based ML algorithms, you may have to scale your numerical features to improve model performance. You can use ML-framework specific pipelines (such as Sk-Learn pipelines, or preprocessing pipelines for TensorFlow or Keras) to perform feature scaling/encoding, but you need to ensure the pipeline objects (that contain both these feature transformation and the model, itself) are saved to the model registry - not just the models. That is because, you need to make sure the same transformations (encoding/scaling) are performed in your inference pipeline. An alternative is to use declarative transformations in a feature view. In declarative transformations, you assign encoding/scaling transformations to features when you define your feature view, and when you reading training or inference data, the transformations are applied transparently in the feature store client library.
