@@ -4,7 +4,7 @@ ArrowFlight Server with DuckDB returns Pandas DataFrames to Python clients when 
 When the service is enabled, clients will automatically use it for the following operations:
 
 - [reading Feature Groups](https://docs.hopsworks.ai/feature-store-api/{{{ hopsworks_version }}}/generated/api/feature_group_api/#read)
-- [reading Queries](https://docs.hopsworks.ai/feature-store-api/{{{ hopsworks_version }}}/generated/api/query/#read)
+- [reading Queries](https://docs.hopsworks.ai/feature-store-api/{{{ hopsworks_version }}}/generated/api/query_api/#read)
 - [reading Training Datasets](https://docs.hopsworks.ai/feature-store-api/{{{ hopsworks_version }}}/generated/api/feature_view_api/#get_training_data)
 - [creating In-Memory Training Datasets](https://docs.hopsworks.ai/feature-store-api/{{{ hopsworks_version }}}/generated/api/feature_view_api/#training_data)
 - [reading Batch Inference Data](https://docs.hopsworks.ai/feature-store-api/{{{ hopsworks_version }}}/generated/api/feature_view_api/#get_batch_data)
