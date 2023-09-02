@@ -21,7 +21,7 @@ nav:
       - Feature Store:
           - Overview: concepts/fs/index.md
           - ML Pipelines: 
-              - Overview: concepts/fs/ml_pipelines/overview.md
+              - ML Pipelines Overview: concepts/fs/ml_pipelines/overview.md
               - Feature Pipelines: concepts/fs/ml_pipelines/feature_pipelines.md
               - Training Pipelines: concepts/fs/ml_pipelines/training_pipelines.md
               - Inference Pipelines: concepts/fs/ml_pipelines/inference_pipelines.md
@@ -48,14 +48,14 @@ nav:
           - Tags/Search/Lineage: concepts/projects/search.md
           - CI/CD: concepts/projects/cicd.md
       - MLOps:
-          - Prediction Services: concepts/mlops/prediction_services.md
-          - Model Training: concepts/mlops/training.md
+          - ML Systems: concepts/mlops/ml_systems.md
           - Model Registry: concepts/mlops/registry.md
-          - Model Serving: concepts/mlops/kserve.md # create, read, version
+          - Model Serving: concepts/mlops/kserve.md 
+          - Model Training: concepts/mlops/training.md
           - Vector Database: concepts/mlops/opensearch.md
           - BI Tools: concepts/mlops/bi_tools.md
       - Development:
-          - Outside Hopsworks: concepts/dev/outside.md # api-keys
+          - Outside Hopsworks: concepts/dev/outside.md
           - Inside Hopsworks: concepts/dev/inside.md
   - Guides:
       - user_guides/index.md
