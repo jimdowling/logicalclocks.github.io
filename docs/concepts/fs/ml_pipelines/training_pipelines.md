@@ -21,7 +21,7 @@ Using a feature store in the training pipeline helps to achieve consistency acro
 
 When you want to train a model, you should select the features (from the different feature groups) that will be used by your model (the same features are used in training and inference), along with a label/target if you will train your model with supervised ML.
 
-<img src="../../../../assets/images/concepts/fs/feature-selection.svg">
+<img src="../../../../assets/images/concepts/fs/feature-selection.svg"  width="600" height="500">
 
 You start by selecting features from different feature groups and join them together to create a feature view. The feature view is the set of input features and label for your model, along with optional filters for feature values and transformations. You can also include extra helper columns in a feature view that are not features used by the model (such as the primary key, the event_time, and columns used by inference pipelines when storing predictions in external systems) - but be sure to drop those columns when creating training data and inference data using the feature view.
 
