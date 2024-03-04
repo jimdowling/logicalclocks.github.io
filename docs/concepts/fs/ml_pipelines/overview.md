@@ -1,3 +1,9 @@
+The term *ML pipelines* is often used to describe all types of programs that contribute to operating a ML system. 
+In Hopsworks, a ML pipeline is an abstract term to describe the set of the three different types of pipelines used to build a ML system: feature pipelines, training pipelines, and inference pipelines, see figure below.
+
+<img src="../../../../assets/images/concepts/fs/ml-pipelines-sets.svg">
+
+
 When building a ML System, you typically have to develop 3 different **ML pipelines** (connected together by a feature store and a model registry):
 
  * __feature pipelines__ *transform raw data into features that are stored in feature groups*. Examples of transformations include aggregations, binning, and dimensionality reduction. The output are features (and labels/targets) that are stored in a *feature group*. Feature pipelines can be batch programs, run on a schedule, or streaming programs that run 24x7.
