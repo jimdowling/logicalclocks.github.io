@@ -109,6 +109,7 @@ nav:
               - Spines: user_guides/fs/feature_view/spine-query.md
               - Feature Monitoring: user_guides/fs/feature_view/feature_monitoring.md
               - Feature Logging: user_guides/fs/feature_view/feature_logging.md
+              - Deployment: user_guides/fs/feature_view/deployment.md
           - Vector Similarity Search: user_guides/fs/vector_similarity_search.md
           - Transformation Functions: user_guides/fs/transformation_functions.md
           - Compute Engines: user_guides/fs/compute_engines.md
@@ -203,6 +204,7 @@ nav:
               - Sharing: user_guides/projects/datasets/sharing.md
           - Secrets:
               - Create Secret: user_guides/projects/secrets/create_secret.md
+          - Mountable Secrets: user_guides/projects/mountable_secrets/mountable_secrets.md
           - Environment variables:
               - Account-level Environment Variables: user_guides/projects/env_vars/create.md
           - Api Keys:
@@ -235,6 +237,7 @@ nav:
               - Model Deployment:
                   - Deployment Creation: user_guides/mlops/serving/deployment.md
                   - Deployment State: user_guides/mlops/serving/deployment-state.md
+                  - Deployment Schema: user_guides/mlops/serving/deployment-schema.md
                   - Predictor (KServe): user_guides/mlops/serving/predictor.md
                   - Transformer (KServe): user_guides/mlops/serving/transformer.md
                   - Inference Logger: user_guides/mlops/serving/inference-logger.md
@@ -285,6 +288,7 @@ nav:
               - Services Dashboards: setup_installation/admin/monitoring/grafana.md
               - Export metrics: setup_installation/admin/monitoring/export-metrics.md
               - Services Logs: setup_installation/admin/monitoring/services-logs.md
+              - Service Log Labels: setup_installation/admin/monitoring/services-logs-labels.md
               - WebSocket Proxy Pool: setup_installation/admin/monitoring/websocket-pool.md
           - Authentication:
               - Configure Authentication: setup_installation/admin/auth.md
