@@ -92,4 +92,4 @@ Once you are done with the changes, click on `Create new deployment` at the bott
 
 ### API Reference
 
-[API Protocol][hsml.deployment.Deployment.api_protocol]
+[API Protocol][hsml.deployment.deployment.Deployment.api_protocol]
