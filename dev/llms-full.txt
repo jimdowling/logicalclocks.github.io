@@ -1974,6 +1974,8 @@ Sections with defaults show a one-line summary of their answers, with **Edit** t
 For an agentic system the LLM's endpoint, model and key are saved as your account environment variables, `LLM_URL`, `LLM_MODEL` and `LLM_API_KEY`.
 For a batch or real-time system, **Monitoring** (collapsed) sets whether every prediction logs the features it used (on by default) and, in your own words, what to monitor and alert on, such as drift in a feature against the training data or a failed job.
 The build turns them into feature logging on the feature view, feature monitoring checks and alerts, and sends a failure alert for every job the system owns to the project's alert receiver.
+For a real-time system, **Prediction latency tracing** (collapsed, off by default) creates the deployment with tracing: the share of requests recorded as traces, from 0.01% to 100% (10% by default), and the days tracing stays on (7 by default).
+The deployment then times every request's feature lookup, transformations, model predict and feature logging, shown under X-ray latencies on its page, and can be switched off and on there without a restart; it serves one worker per replica, which the build's latency benchmark runs with.
 **Create** runs `hops factory run ml-batch --answers` (or `ml-realtime`, `ml-streaming`, `ml-agent`) in a Terminal tab named after the system, which records it and starts Claude Code on `/hops-build <name>`; the page opens the system once it is registered.
 **Location**, above the form of every factory, sets the folder the system's directory goes in, which holds its code and is its git repository: your home folder in the project by default, or another folder of the project you can write to, such as one in `Resources` so every member can open the code; from the CLI, run `hops factory run` in that folder.
 
@@ -4930,12 +4932,69 @@ The `Syncs` tab links it in the `Index` column once the first run has created it
 | `content_hash` | SharePoint's quickXorHash of the content |
 | `sync_id`, `execution_id`, `indexed_at` | the sync and the run that last wrote the row, and when |
 | `ingestion_date` | the partition: the UTC day the file was first indexed, which is the day it was copied in, or for a file already in the dataset, the day indexing was turned on |
+| `list_item_id`, `content_type` | the file's item in the document library, and its content type |
+| `etag`, `ctag` | SharePoint versions of the item: `etag` changes on every edit, `ctag` only when the content changes |
+| `metadata_json` | the document library's column values for the file, custom columns included, as a JSON object |
+| `metadata_truncated` | a JSON array of the columns cut or left out of `metadata_json` for size, or null when none were |
+| `metadata_state` | whether the metadata columns are current; see [Library columns](#library-columns) |
+| `metadata_hash` | a SHA-256 of `list_item_id`, `content_type`, `etag`, `ctag`, `metadata_json`, `metadata_truncated` and the version of the rules that choose the columns; it changes when any of them does |
 
 The table holds no file content; the file is in the dataset at `hopsfs_path`.
 
+#### Library columns
+
+Each run that indexes also reads the library's column values from Microsoft Graph, with the data source's credentials, for every file the sync selects, opening only the folders that hold one.
+The values are readable by everyone who can read the project's feature store, whatever SharePoint permissions the items carry, as the copied files are readable by everyone who can read the dataset.
+`metadata_json` holds every visible column, keyed by its internal name, with values as Graph returns them: a person or lookup column appears as `<Name>LookupId` with its numeric id.
+Columns that repeat a column of the row, such as the name, path, size and times, are left out.
+A text value over 32 KiB is cut, any other value over 32 KiB is left out, and the largest values are left out until the whole is under 256 KiB; `metadata_truncated` names them.
+
+Editing only a file's columns in SharePoint does not copy the file again: the next run rewrites the file's row with the new values.
+
+`metadata_state` says whether the values are current:
+
+| State | Meaning |
+| --- | --- |
+| `complete` | the last run that read the library read these values for the file |
+| `stale` | the values are from an earlier run: the last run could not read the library, or it read other values for a file whose copy failed |
+| `missing` | the last run did not read this file's columns: the library read did not return it, the read failed before the file's first row was written, or the file is no longer in SharePoint; the values, if any, are from an earlier run |
+| null | the row was written before the sync script read library columns, and no run since has read them |
+
+If a run cannot read the library, the files are still copied and indexed, `complete` rows become `stale` with their values kept, a new file's row is `missing`, and the run is reported as partial with `metadata not updated` and the reason.
+The next run that reads the library rewrites them with the values it read, as `complete`.
+The row of a file whose copy failed keeps describing the copy in the dataset, so it keeps its values: it is `complete` when the run read the same values for the file, `stale` when it read other values, and `missing` when the read did not return the file.
+A file a copy-only sync keeps after it was deleted in SharePoint keeps its row, marked `missing`.
+If a run cannot write the index at all, the table stays as the last run left it and the run reports the error.
+Filter on `metadata_state = 'complete'` when the values must be current.
+A `complete` row can still lack a column, or hold a cut value, that `metadata_truncated` names, so a filter on a library column can miss such files.
+Count the rows whose `metadata_truncated` names a column the filter uses before treating its result as exhaustive.
+
+The library's column definitions, as Graph returns them, are written to `columns.json` in the sync's audit directory whenever they change:
+
+```text
+DataSources/<data source>/audit/<dataset>/columns.json
+```
+
+In a terminal, DuckDB lists the column keys in use and filters on their values:
+
+```bash
+duckdb -c "SELECT key, count(*) AS files
+FROM (SELECT unnest(json_keys(metadata_json)) AS key
+      FROM delta_scan('/hopsfs/featurestore/acme_featurestore.db/sharepoint_reports_1')
+      WHERE metadata_json IS NOT NULL)
+GROUP BY key ORDER BY files DESC;"
+duckdb -c "SELECT file_name, web_url
+FROM delta_scan('/hopsfs/featurestore/acme_featurestore.db/sharepoint_reports_1')
+WHERE metadata_state = 'complete' AND metadata_json->>'\$.Department' = 'Finance';"
+duckdb -c "SELECT count(*) AS unchecked
+FROM delta_scan('/hopsfs/featurestore/acme_featurestore.db/sharepoint_reports_1')
+WHERE metadata_state = 'complete'
+  AND list_contains(CAST(CAST(metadata_truncated AS JSON) AS VARCHAR[]), 'Department');"
+```
+
 Each run that does not fail lists the folder with its SharePoint metadata and compares it with the table:
 
-- A file whose copy is in the dataset and that has no row, or whose path, size, modification time, editor or hash changed, is written.
+- A file whose copy is in the dataset and that has no row, or whose path, size, modification time, editor, hash or library column values changed, is written.
   A new file goes into today's partition; a changed or renamed file keeps the partition of the day it was first indexed.
 - A row whose file is gone from both SharePoint and the dataset is deleted, and so is a row whose path now holds another SharePoint file.
   A copy-only sync keeps its files, so it keeps their rows too.
@@ -4951,7 +5010,9 @@ delta-rs 1.4 rewrites a file to delete rows from it and does not write deletion 
 Indexing can be turned on for an existing sync: its next run indexes every copied file that is still in the SharePoint folder.
 A file a copy-only sync kept after it was deleted in SharePoint has no metadata to index, so it gets no row.
 Turning it off keeps the feature group, and a new name starts a new one.
-The sync script must be template version 2 or later; reset it to default if the data source page shows an older version.
+The sync script must be template version 2 or later, and version 3 or later to read the library columns; reset it to default if the data source page shows an older version.
+Resetting a version 2 script to version 3 adds the new columns to an existing index on its next run, which then reads the library columns of every file and rewrites every row once.
+After that, the index cannot be written by a version 2 script again.
 Deleting the sync deletes the feature group, unless the files are kept.
 The name of an index must not be that of an existing feature group, and a sync deletes only the feature group its runs created.
 
@@ -28173,7 +28234,7 @@ With tracing on, the deployment:
 
 - counts every request's transformations on its Prometheus endpoint, per feature view and per transformation function, with the fastest and slowest feature vector of the last minute;
 - records a sample of the requests as traces: the request, its feature lookup, each transformation phase with one span per function in DAG order, the prediction and the feature log write;
-- shows those traces in the `Transformations` section of the deployment page.
+- shows those traces in the `X-ray latencies` section of the deployment page.
 
 It applies to deployments created with `model.deploy(...)` from a model with a feature view, to feature view deployments, and to predictor scripts that call `get_feature_vector` or `get_feature_vectors`.
 
@@ -28217,6 +28278,7 @@ deployment.start()
 ```
 
 `sampling_percentage` is the share of requests recorded as traces, from 0 to 100, and defaults to 10.
+It can be a fraction of a percent: `0.01` records one request in 10,000.
 Every request is counted in the metrics, whatever the sampling.
 
 Tracing stays on for `duration_days`, 7 by default, and then Hopsworks switches it off:
@@ -28257,7 +28319,7 @@ deployment.set_tracing(active=True, sampling_percentage=50)
 deployment.set_tracing(active=True, duration_days=30)
 ```
 
-Switching tracing on, or changing `duration_days` while it is on, keeps it on for `duration_days` from now.
+Switching tracing on, changing `duration_days` while it is on, or starting a stopped deployment whose tracing is on keeps it on for `duration_days` from then.
 `deployment.tracing.active_until` is when it will be switched off.
 Hopsworks checks every 5 minutes: once the period has ended it switches tracing off, sets `active` to `False` and records the end in `deployment.tracing.expired_at`.
 
@@ -28292,11 +28354,49 @@ The response carries `activeUntil` and `expiredAt` in epoch milliseconds.
 
 ## Web UI
 
-The deployment page of a deployment that serves a feature view has a `Transformations` section.
+The deployment page of a deployment that serves a feature view has an `X-ray latencies` section.
 While tracing is on, the section lists the traced requests; expanding one shows its spans with their durations.
-While it is off, the section is titled `Feature View Transformations: Metrics` and shows `Tracing is disabled`; clicking it shows how to turn tracing on.
-On a deployment created with tracing, the switch in the section header turns it off and on, like `set_tracing`, and shows the sampling and the time tracing will be switched off.
+While it is off, the section shows `Tracing is disabled`; clicking it shows how to turn tracing on.
+On a deployment created with tracing, the switch in the section header turns it off and on, like `set_tracing`, and shows the time tracing will be switched off.
+Next to it, `Traced requests` sets the sampling to 0.01%, 0.1%, 1%, 10% or 100%, without restarting the deployment.
 Once the period has ended, the section says when tracing was switched off.
+
+On a deployment created with tracing, the section opens with `Request time by stage`, a table of the requests over the last 24 hours with a row for each stage of each feature view or model, `Feature view / model` naming it with its version, and the number of requests and the minimum, p50, p95, p99 and maximum time spent in it:
+
+| Stage | Time measured |
+| --- | --- |
+| Feature lookup | Reading the feature vectors, including their transformations |
+| Transformations | The on-demand and model-dependent transformations of all the request's feature vectors |
+| Model predict | `model_predict` |
+| Feature log (queueing) | The default predictor queueing the feature log write, which runs after the response, or a predictor script's `log` call |
+
+The buttons next to it change the window to 6 hours, 1 hour, 10 minutes or 1 minute, and the values refresh every minute.
+Every request is counted while tracing is on, whatever the sampling.
+The default predictor reports every stage, for its feature view and its model.
+A predictor script that looks up or logs through several feature views gets a feature lookup, transformations and feature log row for each of them, since `get_feature_vector`, `get_feature_vectors`, their `_async` variants and `log` time themselves; its model calls are its own code, so it has no model predict row.
+The quantiles are estimated from a histogram with ten buckets a decade, so one can be up to 26% off; the minimum and maximum are exact, read from gauges that cover up to the last two minutes.
+
+The same statistics over the REST API, with `window` one of `1m`, `10m`, `1h`, `6h` and `24h` (the default):
+
+```bash
+curl -H "Authorization: ApiKey $HOPSWORKS_API_KEY" \
+  "https://$HOPSWORKS_HOST/hopsworks-api/api/project/$PROJECT_ID/serving/$DEPLOYMENT_ID/latency?window=1h"
+```
+
+```json
+{
+  "window": "1h",
+  "stages": [
+    {"stage": "feature_lookup", "name": "fraud_fv:1", "requests": 1234, "minSeconds": 0.0019, "p50Seconds": 0.0023, "p95Seconds": 0.0031, "p99Seconds": 0.0042, "maxSeconds": 0.0094},
+    {"stage": "transformations", "name": "fraud_fv:1", "requests": 1234, "minSeconds": 0.00011, "p50Seconds": 0.00016, "p95Seconds": 0.00031, "p99Seconds": 0.00052, "maxSeconds": 0.0019},
+    {"stage": "model_predict", "name": "fraud_model:3", "requests": 1234, "minSeconds": 0.00039, "p50Seconds": 0.00047, "p95Seconds": 0.00062, "p99Seconds": 0.00081, "maxSeconds": 0.0021},
+    {"stage": "feature_log", "name": "fraud_fv:1", "requests": 1234, "minSeconds": 0.000013, "p50Seconds": 0.000022, "p95Seconds": 0.000031, "p99Seconds": 0.000039, "maxSeconds": 0.000041}
+  ]
+}
+```
+
+`name` is the feature view or model as `<name>:<version>`. Only entries with requests in the window are returned.
+Another `window` answers `400` with error code `240069`; a Prometheus that does not answer gives `503` with error code `240070`.
 
 The deployment's Grafana dashboard, opened with `View in Grafana` in the `Metrics` section, charts the metrics under `Feature view transformations`.
 
@@ -28309,6 +28409,8 @@ The deployment's Grafana dashboard, opened with `View in Grafana` in the `Metric
 | `hopsworks_transformation_function_calls_total`, `hopsworks_transformation_function_seconds_total`, `hopsworks_transformation_function_errors_total` | the above, `transformation`, `outputs` | The same per transformation function, and the calls that raised |
 | `hopsworks_transformation_function_window_min_seconds`, `hopsworks_transformation_function_window_max_seconds` | the above | Fastest and slowest call of the function in the last complete 60 second window |
 | `hopsworks_transformation_dag_edge` | the above, `depends_on` | 1 for each edge of the transformation DAG |
+| `hopsworks_prediction_stage_seconds` | `stage`, `name` | Histogram of the time one request spent in a stage, `feature_lookup`, `transformations`, `model_predict` or `feature_log`, of the feature view or model `name` (`<name>:<version>`), with buckets ten a decade from 10 µs to 10 s |
+| `hopsworks_prediction_stage_window_min_seconds`, `hopsworks_prediction_stage_window_max_seconds` | `stage`, `name` | Fastest and slowest request in the stage in the current and the last complete 60 second window |
 
 The average time is `rate(..._seconds_total[5m]) / rate(..._calls_total[5m])`.
 `outputs` identifies a function, since one function can be attached to several features.
@@ -28336,26 +28438,34 @@ The deployment page draws the write and `feature_view.log` as a separate backgro
 
 Only the first row of a request is traced, so a batch request records one `transformations` span; all of its rows are counted in the metrics.
 
-## Trace storage limits
+## Trace storage
 
-Traces are stored in the online feature store's disk tablespace, which feature groups with disk columns share.
-Each deployment's `duration_days` bounds how long it records traces; three cluster settings bound what model and feature view deployments store there:
+Traces are kept in the online feature store only, in the project's `serving_traces` feature group, and are never written to the offline store.
+A trace is typically two rows: its root span, and the rest of its spans as JSON; a trace whose spans arrive in several batches, or exceed 60,000 bytes, takes more.
+The feature group has a time to live, 36 hours by default, counted from the start of each trace, so the deployment page shows the requests traced in that window.
+Expired traces disappear from reads at once and RonDB deletes them in the background.
+To keep a project's traces longer or shorter, change the feature group's time to live with [`enable_ttl`][hsfs.feature_group.FeatureGroup.enable_ttl].
+
+The rows are in the online feature store's disk tablespace, which feature groups with disk columns share; the start time and the keys stay in memory, as the time to live requires.
+Each deployment's `duration_days` bounds how long it records traces; these cluster settings bound what model and feature view deployments store:
 
 | Variable | Default | Effect |
 | --- | --- | --- |
+| `serving_tracing_online_ttl_hours` | `36` | Time to live of a project's `serving_traces` feature group, applied when it is created. |
 | `serving_tracing_max_traces_per_minute` | `60` | Most traces one predictor pod records per minute, whatever the sampling percentage. Below 1, no cap. |
-| `serving_tracing_retention_days` | `7` | Traces older than this are deleted. `0` keeps them. |
-| `serving_tracing_pause_free_percent` | `20` | Tracing is paused on every model and feature view deployment while less than this percentage of the tablespace is free. |
+| `serving_tracing_pause_free_percent` | `20` | Tracing is paused on every model and feature view deployment while less than this percentage of the tablespace, or of RonDB DataMemory, is free. |
 
-Hopsworks checks the tablespace every 5 minutes.
-A paused deployment reads `paused_reason == "DISK_NEARLY_FULL"` on `deployment.tracing`, and its page says tracing is paused.
-Deleted traces free space for later traces in the same tables, not in the tablespace, so a pause lifts once an administrator adds a data file to the tablespace and at least 10 points more than the threshold are free.
+At the cap, a predictor pod keeps at most `60 * 60 * 36` traces online, about 1.5 KB of RonDB memory each with five transformation functions.
+Hopsworks checks the tablespace and DataMemory every 5 minutes.
+A paused deployment reads `paused_reason == "DISK_NEARLY_FULL"` or `"MEMORY_NEARLY_FULL"` on `deployment.tracing`, and its page says tracing is paused.
+The pause lifts once both have at least 10 points more than the threshold free.
+Expired and deleted traces free space for later traces in the same table, not in the tablespace, so a disk pause lifts once an administrator adds a data file to the tablespace.
 The settings are Helm values under `hopsworks.variables`; a changed cap reaches running pods the next time their tracing is switched or they restart.
 Deleting a deployment deletes its traces.
 
 The `LowDiskDataFileExtents` alert fires when less than 20% of the tablespace is free.
 
-To delete a deployment's traces yourself, all of them or those created before a time:
+To delete a deployment's traces before they expire, all of them or those started before a time:
 
 ```python
 from datetime import datetime, timedelta
@@ -28366,9 +28476,10 @@ deployment.delete_traces(
 )
 ```
 
-Each request deletes at most `batch_size` rows (default 1000, at most 10000) from each trace table in one transaction, since RonDB caps the operations one transaction holds; `delete_traces` repeats it until none are left and returns the number of rows deleted.
+Each request deletes at most `batch_size` rows (default 1000, at most 10000) in one transaction, since RonDB caps the operations one transaction holds; `delete_traces` repeats it until none are left and returns the number of rows deleted.
 Over the REST API, one request deletes one batch and returns `{"deleted": <rows>}`; repeat it until `deleted` is 0.
-`until` is in epoch milliseconds and is optional:
+`until` is in epoch milliseconds and is optional.
+With it, a trace whose request started before `until` is deleted whole, together with the spans it recorded after `until`:
 
 ```bash
 curl -X DELETE \
@@ -36773,7 +36884,7 @@ That is usually what you want for the platform's own clients, such as OnlineFS a
 
 Optionally, set a default for the users without a quota under `quotas.kafka.*`.
 The Strimzi Cluster Operator writes and reconciles it as the default user quota, and a KafkaUser's own quota overrides it.
-Size it so that the platform's own clients still work: the default applies to internal users too, and this plugin has no way to exclude them, as [the Strimzi documentation](https://strimzi.io/docs/operators/1.2.0/configuring.html#type-QuotasPluginKafka-reference) warns.
+Size it so that the platform's own clients still work: the default applies to internal users too, and this plugin has no way to exclude them, as [the Strimzi documentation](https://strimzi.io/docs/operators/1.3.0/configuring.html#type-QuotasPluginKafka-reference) warns.
 
 ## Cluster-wide limits and the disk guard { #kafka-quotas-cluster-wide }
 
@@ -37344,14 +37455,14 @@ The commands assume Hopsworks is installed in the `hopsworks` namespace.
 | ------- | ---------- | ----------------- |
 | [5.0.x to 5.1.x][upgrade-50-to-51] | 1.3.x to 2.19.x | Kubernetes 1.34 or later before the upgrade, a first Helm 4 upgrade, and from 5.0.13 or earlier to 5.1.2 or later [the Trino query history][upgrade-trino-query-history]. |
 | [5.1.x to 5.2.x][upgrade-51-to-52] | 2.19.x to 3.8.0: upgrade to 5.2.1 or later | The index pass, Kafka moves to KRaft, KEDA, Kubernetes 1.37 only afterwards, Trino, from 5.2.2 [OnlineFS and the schema migrations][upgrade-changes-from-522], and from 5.2.3 with your own image registry [the Envoy image of Python apps][upgrade-changes-from-523]. |
-| [5.2.x to 5.3.x][upgrade-52-to-53] | stays on 3.8.0 | ICEBERG feature groups in Trino, the Filebeat registry, the memory of the OTLP sidecar of agent deployments, [Envoy Gateway][upgrade-envoy-gateway] when turned on, with an external Kafka [the topics Hopsworks creates and deletes on it][upgrade-byok-topics], [notification topics and shared feature stores][upgrade-notification-topics], from 5.2.0 [the subset shares in Trino][upgrade-trino-subset-shares] and the OpenSearch security configuration, and from 5.2.0 or 5.2.1 [OnlineFS and the schema migrations][upgrade-changes-from-522]. |
+| [5.2.x to 5.3.x][upgrade-52-to-53] | stays on 3.8.0 | [Strimzi 1.3][upgrade-strimzi-13] with central before its satellites, ICEBERG feature groups in Trino, the Filebeat registry, with your own pipelines, outputs or plugins [Logstash 9][upgrade-logstash-9], the memory of the OTLP sidecar of agent deployments, [Envoy Gateway][upgrade-envoy-gateway] when turned on, with an external Kafka [the topics Hopsworks creates and deletes on it][upgrade-byok-topics], [notification topics and shared feature stores][upgrade-notification-topics], from 5.2.0 [the subset shares in Trino][upgrade-trino-subset-shares] and the OpenSearch security configuration, and from 5.2.0 or 5.2.1 [OnlineFS and the schema migrations][upgrade-changes-from-522]. |
 
 ## Before every upgrade { #upgrade-before-every-upgrade }
 
 1. Take a backup and check that it completed, as described in [Disaster Recovery][disaster-recovery].
 2. Pass `helm upgrade --timeout` long enough for the hooks of that upgrade.
    The upgrade from 5.1.x to 5.2.x has two that can run for hours: the [OpenSearch index pass][opensearch-set-the-timeout] and the [Kafka migration][kafka4-kraft-upgrade].
-3. If you run satellite clusters, read the order in which they upgrade relative to the central cluster, for [OpenSearch][opensearch-satellite-clusters] and for [Kafka][kafka4-before-you-start], and leave [KEDA][keda-satellite-clusters] out of them.
+3. If you run satellite clusters, read the order in which they upgrade relative to the central cluster, for [OpenSearch][opensearch-satellite-clusters], for [Kafka][kafka4-before-you-start] from 5.1.x to 5.2.x and for [Strimzi 1.3][upgrade-strimzi-13], and leave [KEDA][keda-satellite-clusters] out of them.
 4. If this is the first upgrade of the release with Helm 4, read [Upgrading with Helm 4][upgrading-with-helm-4] first.
 
 ## 5.0.x to 5.1.x { #upgrade-50-to-51 }
@@ -37408,8 +37519,8 @@ Follow [Upgrading OpenSearch][upgrading-opensearch]: it covers what keeps workin
 
 ### Kafka 4 and KRaft { #upgrade-kafka-kraft }
 
-The upgrade migrates every Kafka from ZooKeeper to KRaft and moves Strimzi from 0.45 to 1.2.
-Run the read-only checks in [Before you start][kafka4-before-you-start] first, and read [Kafka 4 and KRaft upgrade notes][kafka4-kraft-upgrade], including the step and the `ignoreDifferences` entry that ArgoCD needs.
+The upgrade migrates every Kafka from ZooKeeper to KRaft and moves Strimzi from 0.45 to 1.2, or to 1.3 from the 5.2.x patch release that uses it.
+Run the read-only checks in [Before you start][kafka4-before-you-start] first, and read [Kafka 4 and KRaft upgrade notes][kafka4-kraft-upgrade], including the step that ArgoCD needs and, with Strimzi 1.2, its `ignoreDifferences` entry.
 
 ### Migration V109 waits for the statistics cleaner { #upgrade-v109-statistics-cleaner }
 
@@ -37517,6 +37628,37 @@ OpenSearch stays on 3.8.0.
 An upgrade from 5.2.0 or 5.2.1 also gets the [changes from 5.2.2][upgrade-changes-from-522].
 An upgrade from 5.2.0 also crosses two changes of 5.2.1, described under 5.1.x to 5.2.x: [Feature groups shared with a subset of their features][upgrade-trino-subset-shares], and the OpenSearch [Security configuration][opensearch-security-configuration], which addresses a vulnerability.
 
+### Strimzi 1.3 { #upgrade-strimzi-13 }
+
+From the 5.2.x patch release that uses Strimzi 1.3, and in 5.3, the chart deploys Strimzi 1.3.0 in place of 1.2.0, and Kafka stays on 4.3.1.
+An upgrade from a release that already uses Strimzi 1.3 crosses none of this.
+
+- **Upgrade central before its satellites**, the reverse of the order from 5.1.x to 5.2.x.
+  A satellite runs on central's operator, and the 1.2.0 operator would replace the satellite's controller onto the 1.3.0 image without the configuration that image reads, which leaves the satellite's Kafka down until central is upgraded.
+  The satellite's upgrade therefore refuses to start while its Kafka was last reconciled by an older 1.x operator.
+  Upgrade central, wait until the satellite's Kafka reports the 1.3.0 operator, then upgrade the satellite:
+
+    ```sh
+    kubectl get kafka <cluster> -n <satellite-namespace> -o jsonpath='{.status.operatorLastSuccessfulVersion}'
+    ```
+
+  Until its own upgrade, the satellite keeps its pods on the old image under the 1.3.0 operator, and that upgrade replaces each of them once.
+- **No step before `helm upgrade`.**
+  The `strimzi-crd-upgrade` hook applies the Strimzi 1.3.0 CRDs before the operator is replaced.
+- **The brokers and controllers are replaced once**, by the new operator, for the new image.
+  The chart stops the outgoing operator before it starts the new one, through `kafka.strimzi-kafka-operator.deploymentStrategy`, so that the 1.2.0 operator does not act on the new image.
+  A pod the 1.2.0 operator replaces onto the 1.3.0 image lacks the configuration that image reads, and restarts until the new operator takes over.
+  It then recovers on its own, which can take a few minutes, because Kubernetes waits up to five minutes between restarts of a failing container.
+  The setting makes that unlikely rather than impossible: nothing waits for the old operator to exit.
+  If your values set `kafka.strimzi-kafka-operator.deploymentStrategy.type: Recreate`, also set `rollingUpdate: null` there, or the merged strategy is rejected.
+  A single-broker cluster is unavailable while its broker is replaced, a single-controller cluster has no KRaft quorum while its controller is replaced, and OnlineFS catches up afterwards.
+- **Three new tags to mirror on an airgapped cluster**: `strimzi/operator`, `strimzi/kafka` and `strimzi/crds`, which `vendor_images.sh` lists.
+- **The operator deletes pods with background propagation during a rolling update.**
+  Strimzi 1.3 turns its `UseBackgroundPodDeletion` feature gate on by default, so that CNI plugins which remove a pod's network endpoints when its object is deleted, such as Cilium, no longer cut a broker off before it has shut down.
+  To keep the earlier foreground deletion, set `kafka.strimzi-kafka-operator.featureGates: "-UseBackgroundPodDeletion"`.
+- **Under ArgoCD, the `ignoreDifferences` entry for the Kafka CRD is no longer needed.**
+  Strimzi 1.3.0's Kafka CRD no longer has the empty map that the entry in [Under ArgoCD][kafka4-argocd] ignores, and the entry matches nothing on it, so it can stay.
+
 ### ICEBERG feature groups in Trino { #upgrade-iceberg-trino }
 
 From 5.3, the Trino `iceberg` catalog reads an ICEBERG feature group on HopsFS once Hopsworks has registered its current Iceberg metadata in the Hive metastore.
@@ -37562,6 +37704,23 @@ On the upgrade to 5.3:
   Later restarts and upgrades resume from the registry.
 - Leave the existing contents of `/var/lib/filebeat-data` in place.
   Nothing in the chart reads them, and they may belong to another Filebeat on the node.
+
+### Logstash 9 { #upgrade-logstash-9 }
+
+In 5.3, and from the 5.2.x patch release that ships it, Logstash moves from 7.17 to 9.5.
+The chart's own pipelines need nothing, and documents keep their field names, because the chart sets `pipeline.ecs_compatibility: disabled`.
+Pipelines, outputs and plugins you added through `logstash.extraPipelines`, `logstash.additional_audit_outputs` or `logstash.plugins` need a check before the upgrade:
+
+- **Rename the TLS settings of `elasticsearch`, `http` and `tcp` outputs in the same upgrade.**
+  The output plugins move up a major version: `elasticsearch` 11 to 12, `http` 5 to 6, `tcp` 6 to 7 and `opensearch` 1 to 2.
+  The new `elasticsearch`, `http` and `tcp` outputs refuse their old SSL settings, such as `cacert`, `ssl` and `ssl_certificate_verification` on `elasticsearch`, `cacert`, `client_cert`, `client_key`, `keystore` and `truststore` on `http`, and `ssl_enable`, `ssl_cert`, `ssl_cacert` and `ssl_verify` on `tcp`.
+  The 7.17 versions do not know the replacement names, such as `ssl_enabled` and `ssl_certificate_authorities`, so no TLS setting works on both versions, and the values of the upgrade itself must carry the new names.
+  Each plugin's page in the [Logstash plugin reference](https://www.elastic.co/docs/reference/logstash/plugins) lists them.
+- **A pipeline that fails to start stops all log shipping.**
+  Logstash keeps running the other pipelines, but the routing pipeline waits on every event for the one that did not start, so service, project and audit logs all stop while the Logstash pod stays ready.
+  After the upgrade, look for `is obsolete and is no longer available` in the Logstash log.
+- **The kafka integration, the `azure_event_hubs` input and the `webhdfs` output are no longer in the image.**
+  A pipeline that uses one of them needs it in `logstash.plugins`, which installs it when the Logstash pod starts, so it needs access to `rubygems.org` and cannot run on an airgapped cluster.
 
 ### Agent deployments reserve 2 GiB for their OTLP sidecar { #upgrade-agent-otlp-sidecar }
 
@@ -38332,6 +38491,7 @@ Source: https://docs.hopsworks.ai/latest/setup_installation/admin/kafka4/
 Administrative reference for cluster operators upgrading a self-managed Hopsworks cluster to 5.2.
 
 Hopsworks 5.2 moves the bundled Kafka from Strimzi 0.45 with Kafka 3.9 to Strimzi 1.2 with Kafka 4.3.1.
+From the 5.2.x patch release that uses Strimzi 1.3, and in 5.3, the operator is Strimzi 1.3 with the same Kafka, and an upgrade from 5.1 to that patch release goes through the same steps.
 Kafka 4 has no ZooKeeper, so an existing cluster is migrated to KRaft as part of the upgrade.
 The chart performs that migration itself; this page covers what to prepare, what to expect and how to verify the result.
 
@@ -38347,7 +38507,7 @@ Two pre-upgrade hooks run before any new component is applied:
    On a cluster already on KRaft it exits in seconds.
 2. `strimzi-crd-upgrade` converts the Strimzi custom resources from the `v1beta2` API to `v1` and brings the CRDs up to the new operator's version.
 
-The release then replaces the operator with Strimzi 1.2 and rolls the brokers to Kafka 4.3.1.
+The release then replaces the operator with the Strimzi 1.x it ships and rolls the brokers to Kafka 4.3.1.
 
 ## What to expect
 
@@ -38356,7 +38516,7 @@ The release then replaces the operator with Strimzi 1.2 and rolls the brokers to
   Helm's `--timeout` applies to each hook on its own: give it at least that budget plus room for the rest of the release.
   On timeout the hook fails rather than hangs, and re-running the upgrade resumes from wherever the operator got to.
 - **Broker pods are replaced about seven times**: during the migration, when the finalised cluster drops its ZooKeeper-era settings, and when the brokers move to Kafka 4.3.1.
-  The controller pods are replaced twice.
+  The controller pods are replaced three times after the migration creates them, the last time when they move to Kafka 4.3.1.
   Strimzi replaces pods rather than restarting containers, so `restartCount` stays 0 throughout; watch pod names and ages instead.
   A single-broker cluster is unavailable for the duration of each replacement, and OnlineFS catches up afterwards; clusters with a replication factor above 1 roll without interruption.
 - **ZooKeeper and the new controllers run side by side** until the migration is finalised.
@@ -38367,8 +38527,8 @@ The release then replaces the operator with Strimzi 1.2 and rolls the brokers to
   Do not `helm rollback` after the migration has started, and do not run this upgrade with `--atomic`, which performs that rollback for you the moment a hook times out: the earlier revision puts the ZooKeeper-shaped Kafka resource back against a cluster that may already have finalised KRaft.
   Re-run the upgrade instead.
 - **One `helm upgrade` migrates the cluster and its CRDs.**
-  The `strimzi-crd-upgrade` hook converts the resources still stored as `v1beta2` through the 0.51.0 CRDs, then applies the 1.2.0 CRDs in the same upgrade, as described in [Strimzi CRDs][kafka4-strimzi-crds].
-- **ArgoCD needs one manual step**, and every Application needs an `ignoreDifferences` entry for the Kafka CRD, as described in [Under ArgoCD][kafka4-argocd].
+  The `strimzi-crd-upgrade` hook converts the resources still stored as `v1beta2` through the 0.51.0 CRDs, then applies the new operator's CRDs in the same upgrade, as described in [Strimzi CRDs][kafka4-strimzi-crds].
+- **ArgoCD needs one manual step**, and on a release with Strimzi 1.2 an Application that shows the Kafka CRD OutOfSync needs an `ignoreDifferences` entry for it, as described in [Under ArgoCD][kafka4-argocd].
 
 ## Before you start { #kafka4-before-you-start }
 
@@ -38386,7 +38546,7 @@ The upgrade refuses, or waits until it times out, on each problem they find.
 
     - `ok`: nothing to do; go on with checks 2 to 4.
     - `converted`: an earlier 5.2 upgrade converted the CRDs, which it does only once every Kafka on the Kubernetes cluster is on KRaft.
-      Nothing to do, and checks 2 to 4 do not apply: the state field is gone, and the operator may already be 1.2.
+      Nothing to do, and checks 2 to 4 do not apply: the state field is gone, and the operator may already be 1.x.
     - `strimzi-0.39`: the CRDs cannot report the migration state, so the migration hook refuses rather than guess.
       A cluster has these when it was first installed on Hopsworks 4.3, 4.5 or a 4.4 release before 4.4.19, and has been upgraded with `helm upgrade` or ArgoCD since.
       Apply the Strimzi 0.45.2 CRDs, then wait until check 2 shows a state.
@@ -38398,7 +38558,7 @@ The upgrade refuses, or waits until it times out, on each problem they find.
         ```
 
         Do not apply the 5.2 chart's own CRDs for that: the apiserver rejects them while `v1beta2` is still a stored version.
-        An airgapped cluster has to mirror that bundle too; the `strimzi/crds` image carries only the 0.51.0 and 1.2.0 bundles.
+        An airgapped cluster has to mirror that bundle too; the `strimzi/crds` image carries only the 0.51.0 bundle and the operator's own.
 
 2. **Every Kafka**, in all namespaces, because the central cluster's operator also runs the satellites':
 
@@ -38447,8 +38607,8 @@ Then:
 
 ## Strimzi CRDs { #kafka4-strimzi-crds }
 
-Strimzi 1.2 stores its resources as `kafka.strimzi.io/v1`.
-The `strimzi-crd-upgrade` hook converts CRDs that still store `v1beta2` through the 0.51.0 CRDs, then applies the 1.2.0 CRDs with `v1beta2` still served.
+Strimzi 1.x stores its resources as `kafka.strimzi.io/v1`.
+The `strimzi-crd-upgrade` hook converts CRDs that still store `v1beta2` through the 0.51.0 CRDs, then applies the new operator's CRDs with `v1beta2` still served.
 
 Under Helm, `v1beta2` stays served on that Kubernetes cluster afterwards.
 Helm builds a release's current objects from the manifest it stored, so a release stored at `v1beta2`, such as a satellite upgraded to 5.2 before central, can only be upgraded while that version is served.
@@ -38466,7 +38626,7 @@ An uninstall with hooks runs the failed release's cleanup Job, which on a Kubern
 
 A Kubernetes cluster upgraded with a 5.2 pre-release chart can be left on the 0.51.0 CRDs.
 The Strimzi operator then logs `Kafka <name> in namespace <namespace> was MODIFIED` every few seconds for each Kafka and runs at its CPU limit.
-Upgrading central with 5.2.0 or later applies the 1.2.0 CRDs and ends it.
+Upgrading central with 5.2.0 or later applies the CRDs of its Strimzi 1.x and ends it.
 To check, run the following; `false` means the Kubernetes cluster still has the 0.51.0 CRDs:
 
 ```sh
@@ -38506,12 +38666,13 @@ The `strimzi-crd-upgrade` hook therefore stops the sync after the conversion, an
 
 4. **Sync**, with the Sync button or `argocd app sync hopsworks`.
     Auto-sync does not retry a revision whose last attempt failed, so this sync is manual.
-    It applies the 1.2.0 CRDs, the operator and the `v1` resources, upgrades Kafka, and runs the PostSync hooks.
+    It applies the new operator's CRDs, the operator and the `v1` resources, upgrades Kafka, and runs the PostSync hooks.
 
-5. **Give the Application an `ignoreDifferences` entry for the Kafka CRD**, on a fresh install as much as on an upgrade.
+5. **On a release with Strimzi 1.2, if the Application shows the Kafka CRD OutOfSync, give it an `ignoreDifferences` entry for that CRD**, on a fresh install as much as on an upgrade.
     Upstream's 1.2.0 Kafka CRD declares an empty `properties: {}` map under `status.clusterSecurity`, and the apiserver drops an empty map when it stores a CRD, so the live object never matches the render.
-    Without the entry the Application never reaches Synced, and selfHeal re-applies that one CRD every five minutes.
+    Not every Application compares the two in a way that notices; one that does never reaches Synced without the entry, and selfHeal re-applies that one CRD every five minutes.
     The entry matches nothing on 5.1.x, so you can add it before the upgrade.
+    Strimzi 1.3.0's Kafka CRD has no such map, so a release with Strimzi 1.3 does not need the entry, and it can stay because it matches nothing there either.
     `helm upgrade` is not affected.
 
     ```yaml
@@ -47068,9 +47229,11 @@ When you upgrade, read the breaking changes of every release between yours and t
 | [5.2.2][hopsworks-5-2-2] | 2026-10-28 | [5.2.2](https://github.com/logicalclocks/hopsworks-api/releases/tag/5.2.2) |
 | [5.2.1][hopsworks-5-2-1] | 2026-10-16 | [5.2.1](https://github.com/logicalclocks/hopsworks-api/releases/tag/5.2.1) |
 | [5.2.0][hopsworks-5-2-0] | 2026-10-15 | [5.2.1](https://github.com/logicalclocks/hopsworks-api/releases/tag/5.2.1) |
+| [5.1.3][hopsworks-5-1-3] | TBD | [5.1.2](https://github.com/logicalclocks/hopsworks-api/releases/tag/5.1.2) |
 | [5.1.2][hopsworks-5-1-2] | 2026-10-16 | [5.1.2](https://github.com/logicalclocks/hopsworks-api/releases/tag/5.1.2) |
 | [5.1.1][hopsworks-5-1-1] | 2026-10-09 | [5.1.1](https://github.com/logicalclocks/hopsworks-api/releases/tag/5.1.1) |
 | [5.1.0][hopsworks-5-1-0] | 2026-09-24 | [5.1.0](https://github.com/logicalclocks/hopsworks-api/releases/tag/5.1.0) |
+| [5.0.15][hopsworks-5-0-15] | TBD | [5.0.10](https://github.com/logicalclocks/hopsworks-api/releases/tag/5.0.10) |
 | [5.0.14][hopsworks-5-0-14] | 2026-10-16 | [5.0.10](https://github.com/logicalclocks/hopsworks-api/releases/tag/5.0.10) |
 | [5.0.13][hopsworks-5-0-13] | 2026-09-28 | [5.0.9](https://github.com/logicalclocks/hopsworks-api/releases/tag/5.0.9) |
 | [5.0.12][hopsworks-5-0-12] | 2026-09-21 | [5.0.9](https://github.com/logicalclocks/hopsworks-api/releases/tag/5.0.9) |
@@ -47173,6 +47336,8 @@ Helm chart 5.2.2 · Released on 2026-10-28 · Changes since [5.2.1][hopsworks-5-
 
 - [API] [FRONTEND] [HELM] Changed how OnlineFS checks the topic of the records it writes, to address a vulnerability ([what this affects][docs-upgrade-onlinefs]).
   Restart the producers that hold on to a topic after it changes; on a Kafka where records reach OnlineFS on a renamed topic, such as a mirrored secondary, set `onlinefs.configmapOverrides.onlinefssite.service.verifyFeatureGroupTopic: false`.
+- [API] A batch REST request with more than 4096 operations, or a batch feature vector request with more than 4096 entries, is now rejected by the RonDB REST server with HTTP 413, where it accepted any number; split larger batches, or raise `rondb.rondb.rdrs.internal.maxOperationsPerBatchRequest`.
+- [API] A primary key read of a BLOB or TEXT value larger than 2 MiB now fails that operation with HTTP 413, and a feature vector with such a value fails with error 22 `Feature value too large.`, where the RonDB REST server returned it; raise `rondb.rondb.rdrs.internal.maxBlobTextValueBytes` (`0` for no limit) if you store larger values.
 - [API] [FRONTEND] On a cluster with Kueue, Spark jobs are now queued by Kueue and run with static executors instead of dynamic allocation: a job saved with dynamic allocation runs its dynamic-allocation minimum, at least one executor, and `spark.dynamicAllocation.enabled=true` is refused; set `spark.executor.instances` for more executors ([what changes][docs-kueue-what-changes]).
 - [API] [FRONTEND] The upgrade deletes the Deployment of every Python app whose executions have all ended, also one that still answers requests; start such an app again to keep it running.
 - [API] [FRONTEND] Apps created from 5.2.2 on can only read the online feature store database, apart from the tables they create with `App.create_table` and change with `App.alter_table` in the Python client, or with `createTable` and `alterTable` of `@hopsworks/app` in Node.js; before, the apps of Data Owners could create, alter and write to any of its tables with their own SQL ([database access][docs-apps-db]).
@@ -47183,6 +47348,7 @@ Helm chart 5.2.2 · Released on 2026-10-28 · Changes since [5.2.1][hopsworks-5-
 - [HELM] Hopsworks now uses Kueue 0.20.3 installed as its own release, `kueue` in `kueue-system`, instead of the Kueue 0.12.2 bundled in its namespace, and the chart refuses to render while the bundled Kueue still runs ([Kueue outside the Hopsworks namespace][docs-upgrade-kueue-external]).
   With `global._hopsworks.kueue.enabled: true`, move Kueue with the 5.1 chart's `migrate-to-external.sh` before the upgrade, run the chart's `upgrade-kueue.sh` after it, and remove `hw-kueue.managerConfig`, `hw-kueue.nameOverride` and every `hw-kueue.kueue` value but `enabled` from your values, or the values schema rejects the upgrade.
 - [HELM] Remove `rondb.rondb.rdrs.internal.bufferSize`, `gomaxprocs` and `maxAllocatedBuffers` from your values, which the chart ignored, or `helm upgrade` fails before changing anything.
+- [HELM] If you pin `rondb.rondb.images.rondb.tag` to a version older than 26.02.12, set `rondb.rondb.rdrs.internal.bufferShrinkAfterS: null` before upgrading, or upgrade the image: the chart now sets `Internal.BufferShrinkAfterS`, which RonDB REST server images before 26.02.12 reject, and they then don't start.
 - [HELM] The hopsworks, HopsFS and Hive schema migrations now run on the DDL SQL node instead of the application SQL nodes, so they no longer wait for application queries; a cluster that disables it (`rondb.rondb.meta.ddlMySQLd.enabled: false`) sets `hopsworks.dependencies.mysql.ddlConsulServiceName`, `hopsfs.dependencies.mysql.ddlConsulServiceName` and `hive.metastore.dependencies.mysql.ddlConsulServiceName` to `mysql`, or the migrations wait for a SQL node that doesn't exist ([DDL SQL node][docs-upgrade-ddl]).
 - [HELM] The chart package no longer ships `values.aws.yaml`, `values.azure.yml`, `values.gcp.yaml`, `values.rhel8.yaml` and `values.nodeselector-tolerations.yaml`; keep a copy of the one you pass, or start from the values file of the [AWS][docs-setup-aws], [Azure][docs-setup-azure] or [GCP][docs-setup-gcp] setup guide and take the RHEL 8 and node pool values from [Python build performance][docs-buildkitd-rhel8] and [dedicated node pools][docs-node-pools].
 
@@ -47237,6 +47403,7 @@ Follow [Changes from 5.2.2][docs-upgrade-changes-from-522] in the upgrade guide.
 ### Configuration changes
 
 - [HELM] Changed the memory request and limit of the RonDB REST server pods (`rondb.rondb.resources.requests.memory.rdrsMiB`, `rondb.rondb.resources.limits.memory.rdrsMiB`) from 100 MiB and 500 MiB to 2 GiB; check node capacity before the upgrade.
+  Large batches, wide rows or feature views with many feature groups can fill the RonDB REST server's buffer pool, which then answers HTTP 503, also to concurrent requests, and raising `maxOperationsPerBatchRequest` doesn't enlarge it: raise both values above 2 GiB for such workloads, or send smaller batches or fewer at once.
 - [HELM] Changed the default of `hopsworks.variables.agent_deployment_otel_memory_mb`, the memory request and limit of the OTLP sidecar of traced agent deployments, from 1024 to 2048.
   Each traced agent deployment reserves it on its node once it is recreated, so check node memory before you redeploy them ([OTLP sidecar][docs-upgrade-otlp]).
 - [HELM] Changed the default of `trino.authSeeder.ttlSecondsAfterFinished` from 3600 to `null`, which keeps the finished Trino auth seed Job for `global._hopsworks.jobs.ttlSecondsAfterFinished` (1 day).
@@ -47623,6 +47790,27 @@ Source: https://docs.hopsworks.ai/latest/releases/5.1/
 # Release notes { #hopsworks-5-1 }
 
 The releases of Hopsworks 5.1, newest first.
+
+## 5.1.3 { #hopsworks-5-1-3 }
+
+Helm chart 5.1.3 · Released on TBD · Changes since [5.1.2][hopsworks-5-1-2] · Python client [5.1.2](https://github.com/logicalclocks/hopsworks-api/releases/tag/5.1.2), unchanged
+
+### What's changed
+
+- Changed the RonDB REST server to size its buffer pool from its memory limit, return idle buffers after 15 minutes and opt out of transparent huge pages, so that its memory stays bounded.
+
+### Breaking changes
+
+- [API] A batch REST request with more than 4096 operations, or a batch feature vector request with more than 4096 entries, is now rejected by the RonDB REST server with HTTP 413, where it accepted any number; split larger batches, or raise `rondb.rondb.rdrs.internal.maxOperationsPerBatchRequest`.
+- [API] A primary key read of a BLOB or TEXT value larger than 2 MiB now fails that operation with HTTP 413, and a feature vector with such a value fails with error 22 `Feature value too large.`, where the RonDB REST server returned it; raise `rondb.rondb.rdrs.internal.maxBlobTextValueBytes` (`0` for no limit) if you store larger values.
+- [HELM] Remove `rondb.rondb.rdrs.internal.bufferSize`, `gomaxprocs` and `maxAllocatedBuffers` from your values, which the chart ignored, or `helm upgrade` fails before changing anything.
+- [HELM] If you pin `rondb.rondb.images.rondb.tag` to a version older than 26.02.12, set `rondb.rondb.rdrs.internal.bufferShrinkAfterS: null` before upgrading, or upgrade the image: the chart now sets `Internal.BufferShrinkAfterS`, which RonDB REST server images before 26.02.12 reject, and they then don't start.
+
+### Configuration changes
+
+- [HELM] Changed the memory request and limit of the RonDB REST server pods (`rondb.rondb.resources.requests.memory.rdrsMiB`, `rondb.rondb.resources.limits.memory.rdrsMiB`) from 100 MiB and 500 MiB to 2 GiB; check node capacity before the upgrade.
+  Large batches, wide rows or feature views with many feature groups can fill the RonDB REST server's buffer pool, which then answers HTTP 503, also to concurrent requests, and raising `maxOperationsPerBatchRequest` doesn't enlarge it: raise both values above 2 GiB for such workloads, or send smaller batches or fewer at once.
+- [HELM] Added the RonDB REST server settings the chart didn't expose, under `rondb.rondb.rdrs`, such as its buffer pool, its request, BLOB and batch size limits, its rate limit and its use of transparent huge pages.
 
 ## 5.1.2 { #hopsworks-5-1-2 }
 
@@ -48115,6 +48303,27 @@ Source: https://docs.hopsworks.ai/latest/releases/5.0/
 # Release notes { #hopsworks-5-0 }
 
 The releases of Hopsworks 5.0, newest first.
+
+## 5.0.15 { #hopsworks-5-0-15 }
+
+Helm chart 5.0.15 · Released on TBD · Changes since [5.0.14][hopsworks-5-0-14] · Python client [5.0.10](https://github.com/logicalclocks/hopsworks-api/releases/tag/5.0.10), unchanged
+
+### What's changed
+
+- Changed the RonDB REST server to size its buffer pool from its memory limit, return idle buffers after 15 minutes and opt out of transparent huge pages, so that its memory stays bounded.
+
+### Breaking changes
+
+- [API] A batch REST request with more than 4096 operations, or a batch feature vector request with more than 4096 entries, is now rejected by the RonDB REST server with HTTP 413, where it accepted any number; split larger batches, or raise `rondb.rondb.rdrs.internal.maxOperationsPerBatchRequest`.
+- [API] A primary key read of a BLOB or TEXT value larger than 2 MiB now fails that operation with HTTP 413, and a feature vector with such a value fails with error 22 `Feature value too large.`, where the RonDB REST server returned it; raise `rondb.rondb.rdrs.internal.maxBlobTextValueBytes` (`0` for no limit) if you store larger values.
+- [HELM] Remove `rondb.rondb.rdrs.internal.bufferSize`, `gomaxprocs` and `maxAllocatedBuffers` from your values, which the chart ignored, or `helm upgrade` fails before changing anything.
+- [HELM] If you pin `rondb.rondb.images.rondb.tag` to a version older than 26.02.12, set `rondb.rondb.rdrs.internal.bufferShrinkAfterS: null` before upgrading, or upgrade the image: the chart now sets `Internal.BufferShrinkAfterS`, which RonDB REST server images before 26.02.12 reject, and they then don't start.
+
+### Configuration changes
+
+- [HELM] Changed the memory request and limit of the RonDB REST server pods (`rondb.rondb.resources.requests.memory.rdrsMiB`, `rondb.rondb.resources.limits.memory.rdrsMiB`) from 100 MiB and 500 MiB to 2 GiB; check node capacity before the upgrade.
+  Large batches, wide rows or feature views with many feature groups can fill the RonDB REST server's buffer pool, which then answers HTTP 503, also to concurrent requests, and raising `maxOperationsPerBatchRequest` doesn't enlarge it: raise both values above 2 GiB for such workloads, or send smaller batches or fewer at once.
+- [HELM] Added the RonDB REST server settings the chart didn't expose, under `rondb.rondb.rdrs`, such as its buffer pool, its request, BLOB and batch size limits, its rate limit and its use of transparent huge pages.
 
 ## 5.0.14 { #hopsworks-5-0-14 }
 
