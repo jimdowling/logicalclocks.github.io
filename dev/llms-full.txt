@@ -3407,6 +3407,11 @@ Things to know:
 
 Move on to the [usage guide for data sources][data-source-usage] to see how you can use your newly created S3 connector.
 
+### Copy files into a dataset
+
+The same data source can also copy the files under a prefix of the bucket, whatever their format, into a dataset of the project, once or on a schedule, with optional mirroring of deletions and a file index feature group.
+See [Copy files from S3, GCS or ADLS into a dataset][files-ingestion].
+
 ================================================================================
 # AWS Glue
 Source: https://docs.hopsworks.ai/latest/user_guides/fs/data_source/creation/glue/
@@ -3768,6 +3773,11 @@ If you get an error "StatusCode=404 StatusDescription=The specified filesystem d
 
 Move on to the [usage guide for data sources](../usage.md) to see how you can use your newly created ADLS connector.
 
+### Copy files into a dataset
+
+The same data source can also copy the files under a prefix of the container, whatever their format, into a dataset of the project, once or on a schedule, with optional mirroring of deletions and a file index feature group.
+See [Copy files from S3, GCS or ADLS into a dataset][files-ingestion].
+
 ================================================================================
 # BigQuery
 Source: https://docs.hopsworks.ai/latest/user_guides/fs/data_source/creation/bigquery/
@@ -3928,6 +3938,11 @@ Start by giving it a unique **name** and an optional **description**.
 
 Move on to the [usage guide for data sources](../usage.md) to see how you can use your newly created GCS
 connector.
+
+### Copy files into a dataset
+
+The same data source can also copy the files under a prefix of the bucket, whatever their format, into a dataset of the project, once or on a schedule, with optional mirroring of deletions and a file index feature group.
+See [Copy files from S3, GCS or ADLS into a dataset][files-ingestion].
 
 ================================================================================
 # SQL
@@ -6120,6 +6135,394 @@ hops datasource sharepoint sync delete finance_sharepoint <sync id> --keep-files
 `hops datasource sharepoint sync` also has `status`, `run`, `pause`, `resume`, `resync`, `schedule`, `set-folder` and `index`, and `hops datasource sharepoint reset-script` restores the sync script.
 
 ================================================================================
+# SFTP
+Source: https://docs.hopsworks.ai/latest/user_guides/fs/data_source/creation/sftp/
+
+# How-To set up an SFTP Data Source { #data-source-sftp }
+
+## Introduction
+
+An SFTP data source connects a Hopsworks project to a directory on an SFTP server, reached over SSH.
+It does not back feature groups and cannot be read with Spark.
+Instead, it is the source of a [files ingestion job][files-ingestion], which copies the files under a path of the server, whatever their format, into a dataset of the project, either once or on a schedule, with optional mirroring of deletions and a file index feature group.
+
+The job reads the server with the dltHub `filesystem` source over [paramiko](https://www.paramiko.org/), and gives up after 60 seconds on a connection, a banner or a login that does not complete.
+Data only flows from the server into Hopsworks.
+Changes made in the dataset are never written back to the server.
+
+## Prerequisites
+
+### Server
+
+- **Host and port**: the server must be reachable from the cluster, both from the Hopsworks backend, which tests the connection, and from the Kubernetes pods that run the ingestion jobs.
+  Clusters that restrict outbound traffic must allow the host and port, `22` by default.
+- **User**: an account on the server with read access to the files to copy.
+  Hopsworks only lists and downloads, so a read-only account is enough.
+- **Root path**: the absolute directory on the server under which the files live, `/` by default.
+  Every prefix of a files ingestion job is relative to it, so an account chrooted to its home directory typically uses `/`.
+
+### Credentials
+
+The data source authenticates with one of:
+
+- a **password**, or
+- a **private key** in PEM format (`-----BEGIN ... PRIVATE KEY-----`), with an optional **passphrase**.
+  Keys in other formats, such as PuTTY `.ppk`, must be converted to PEM first.
+
+The password, key and passphrase are stored in the Hopsworks secret store and never returned by the API or shown in the UI again; the data source only reports that credentials are set.
+
+### Client version
+
+The Python client and the `hops` CLI support SFTP data sources from Hopsworks 5.3.0.
+Clients older than 5.3.0 do not know the SFTP type and fail to list a feature store's data sources once it has one, so upgrade the client in environments that list data sources.
+
+## Creation in the UI
+
+### Step 1: Set up a new data source
+
+Head to the `Data Sources` view in Hopsworks and click `New data source`.
+Pick the `SFTP` card, in the `Files & documents` category.
+
+<figure markdown>
+  ![Data Source Creation](../../../../assets/images/guides/fs/data_source/data_source_overview.png)
+  <figcaption>The Data Source view in the user interface</figcaption>
+</figure>
+
+### Step 2: Enter the connection details
+
+<!-- TODO screenshot sftp_creation.png to capture; uncomment once the file exists:
+<figure markdown>
+  ![SFTP Data Source Creation](../../../../assets/images/guides/fs/data_source/sftp_creation.png)
+  <figcaption>The SFTP creation form</figcaption>
+</figure>
+-->
+
+1. **Name** and an optional **Description**.
+2. **Host**: the host name or IP address of the server, without a scheme or a path, such as `sftp.example.com`.
+3. **Port**: `22` by default.
+4. **Username**.
+5. **Root path**: an absolute path, `/` by default.
+   It must start with `/` and cannot contain `..`.
+6. **Authentication**: `Password`, with the password, or `Private key`, with the PEM private key pasted into the text area and the passphrase if the key has one.
+
+Click `Test connection` to check that the server is reachable.
+Hopsworks checks that an SSH server answers at the host and port, and reports `SSH server reached at <host>:<port>` when it does.
+The test does not log in, so a wrong username, password or key is only found by the first run of a files ingestion job.
+
+Click `Next` to save the data source and go on to the second step of the wizard, `Copy files into a dataset`, described in the [files ingestion guide][files-ingestion].
+The `Browse` button of the prefix is not available for SFTP, so type the prefix.
+
+### Editing the data source
+
+The data source page shows the host, port, username, root path and authentication method, and that credentials are set.
+Saving the form without a new password or key keeps the stored one; enter a new one to replace it.
+The next run of each files ingestion job uses the new credentials.
+
+## Using the Python client
+
+```python
+import hopsworks
+from hsfs.storage_connector import SftpConnector
+
+
+project = hopsworks.login()
+fs = project.get_feature_store()
+
+sftp = fs.create_data_source(
+    SftpConnector(
+        id=None,
+        name="handbook_sftp",
+        featurestore_id=fs.id,
+        host="sftp.example.com",
+        port=22,
+        username="ingest",
+        path="/data",
+        auth_type="PASSWORD",
+        password=hopsworks.get_secrets_api().get_secret("sftp_password").value,
+    )
+).storage_connector
+
+print(sftp.credentials_set)  # True; password, private_key, passphrase read as None
+
+job = sftp.ingest_files(dataset="handbook", prefix="handbook/2026/")
+```
+
+For a private key, pass `auth_type="PRIVATE_KEY"` and the PEM text as `private_key`, with `passphrase` when the key has one:
+
+```python
+from pathlib import Path
+
+import hopsworks
+from hsfs.storage_connector import SftpConnector
+
+
+project = hopsworks.login()
+fs = project.get_feature_store()
+
+sftp = fs.create_data_source(
+    SftpConnector(
+        id=None,
+        name="handbook_sftp",
+        featurestore_id=fs.id,
+        host="sftp.example.com",
+        username="ingest",
+        path="/data",
+        auth_type="PRIVATE_KEY",
+        private_key=Path("~/.ssh/ingest.pem").expanduser().read_text(),
+        passphrase=None,
+    )
+).storage_connector
+```
+
+`auth_type` is `PASSWORD` or `PRIVATE_KEY` and may be left out, since it follows from the credential given.
+`password`, `private_key` and `passphrase` are write-only: they are sent when the data source is created or updated and read back as `None`, and `credentials_set` tells whether the data source has credentials.
+An update that leaves them out keeps the stored credentials; to rotate them, call `set_credentials` with the new password or key and then `update`:
+
+```python
+import hopsworks
+
+
+project = hopsworks.login()
+fs = project.get_feature_store()
+
+sftp = fs.get_data_source("handbook_sftp").storage_connector
+sftp.set_credentials(password="...")
+sftp.update()
+```
+
+!!! api "API reference"
+
+    - <code class="doc-symbol doc-symbol-method"></code> [`FeatureStore.create_data_source`][hsfs.feature_store.FeatureStore.create_data_source]
+    - <code class="doc-symbol doc-symbol-method"></code> [`FeatureStore.get_data_source`][hsfs.feature_store.FeatureStore.get_data_source]
+    - <code class="doc-symbol doc-symbol-class"></code> <autoref identifier="hsfs.storage_connector.SftpConnector" optional><code>SftpConnector</code></autoref>
+        - <code class="doc-symbol doc-symbol-method"></code> <autoref identifier="hsfs.storage_connector.SftpConnector.set_credentials" optional><code>set_credentials</code></autoref>
+    - <code class="doc-symbol doc-symbol-class"></code> [`StorageConnector`][hsfs.storage_connector.StorageConnector]
+        - <code class="doc-symbol doc-symbol-method"></code> <autoref identifier="hsfs.storage_connector.StorageConnector.ingest_files" optional><code>ingest_files</code></autoref>
+        - <code class="doc-symbol doc-symbol-method"></code> [`update`][hsfs.storage_connector.StorageConnector.update]
+    - <code class="doc-symbol doc-symbol-docs"></code> [paramiko](https://www.paramiko.org/)
+
+    <a class="hops-api-cta" href="../../../../../python-api/hopsworks/">Browse the full Python API :material-arrow-right:</a>
+
+## Using the CLI
+
+```bash
+hops datasource create sftp handbook_sftp \
+    --host sftp.example.com --port 22 --username ingest --path /data \
+    --password - < password.txt
+hops datasource create sftp handbook_sftp_key \
+    --host sftp.example.com --username ingest --path /data \
+    --private-key-file ~/.ssh/ingest.pem --passphrase -
+hops datasource ingest-files handbook_sftp --dataset handbook --prefix handbook/2026/
+```
+
+`--password` and `--private-key-file` are alternatives; `--passphrase` goes with the key.
+`--private-key-file` reads the PEM file on your machine and sends its content, so the file itself never needs to be in the project.
+A secret option given as `-` reads one line from standard input, and each secret option also reads the environment variable `HOPSWORKS_DS_SFTP_<OPTION>`, such as `HOPSWORKS_DS_SFTP_PASSWORD`, so secrets do not appear on the command line.
+
+## Next steps
+
+Copy the files under a path of the server into a dataset with a [files ingestion job][files-ingestion].
+The prefix of the job is relative to the root path of the data source, and a run reads `sftp://<host>:<port><root path>/<prefix>`, so a data source with root path `/data` and a job with prefix `handbook/` copies the files under `/data/handbook/` on the server.
+The manifest and the index feature group, when turned on, record `sftp` in `source_type` and each file as `sftp://<host><absolute path>` in `source_url`, without the port or the user, so `sftp://sftp.example.com/data/handbook/a.pdf` in the example.
+
+## Limitations
+
+- An SFTP data source is read-only and files-only.
+  It backs no feature groups, cannot be read with Spark, and the dltHub table ingestion does not offer it.
+- Files are copied one at a time and the directory is listed in full on every run, so a very large tree is better split into several jobs with narrower prefixes.
+- Browsing the server for a prefix is not available; type the prefix.
+- `Test connection` only checks that an SSH server answers at the host and port; the credentials are checked by the first run.
+  Testing a server at a private or cluster-internal address needs an administrator to enable the `sftp_allow_private_ranges` variable.
+
+================================================================================
+# Google Drive
+Source: https://docs.hopsworks.ai/latest/user_guides/fs/data_source/creation/google_drive/
+
+# How-To set up a Google Drive Data Source { #data-source-google-drive }
+
+## Introduction
+
+A Google Drive data source connects a Hopsworks project to a folder in [Google Drive](https://www.google.com/drive/), in a user's My Drive or in a shared drive.
+It does not back feature groups and cannot be read with Spark.
+Instead, it is the source of a [files ingestion job][files-ingestion], which copies the files under the folder, whatever their format, into a dataset of the project, either once or on a schedule, with optional mirroring of deletions and a file index feature group.
+
+Hopsworks reads the folder as a Google Cloud service account, through the Google Drive API with the read-only scope `drive.readonly`, with the dltHub `filesystem` source in read-only mode.
+Data only flows from Google Drive into Hopsworks.
+Changes made in the dataset are never written back to Drive.
+
+## Prerequisites
+
+### Service account and key file
+
+Hopsworks authenticates to Google Drive with a service account of a Google Cloud project:
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), pick or create a project and [enable the Google Drive API](https://console.cloud.google.com/apis/library/drive.googleapis.com) in it.
+   Requests of a project without the API enabled are refused, whatever the folder is shared with.
+2. Under `IAM & Admin`, then `Service Accounts`, create a service account.
+   It needs no role in the Google Cloud project; its access to the files comes from sharing the folder with it.
+3. Open the service account, and under `Keys` add a new key of type `JSON`.
+   Download the key file; it is the only copy.
+   See [Create service account keys](https://cloud.google.com/iam/docs/keys-create-delete) for the details.
+4. Note the service account's email, `<name>@<project>.iam.gserviceaccount.com`, which is also the `client_email` field of the key file.
+
+The key file is uploaded to the Hopsworks project when the data source is created, and deleted with it.
+
+### Folder
+
+Share the folder with the service account's email, as a `Viewer`.
+Hopsworks only lists and downloads, so viewer access is enough.
+The service account is its own Google identity: a folder in your My Drive is invisible to it until it is shared, even though the service account's key was created in your Google Cloud project.
+
+1. In Google Drive, right-click the folder and choose `Share`.
+2. Enter the service account's email, `<name>@<project>.iam.gserviceaccount.com`, and pick `Viewer`.
+3. Untick `Notify people`, since the service account has no inbox, and click `Share`.
+   Google may warn that the address is outside your organisation; confirm it.
+
+A Google Workspace administrator can block sharing with addresses outside the organisation; in that case put the folder on a shared drive and add the service account as a member of it.
+
+For a shared drive, add the service account as a member of the shared drive, as a `Viewer`, or share one of its folders with it.
+Shared drives are reached through the same data source; nothing else is needed.
+
+Copy the **folder ID** from the folder's URL in the browser: it is the last part of `https://drive.google.com/drive/folders/<folder ID>`, a string of letters, digits, `-` and `_`.
+The root of a shared drive has an ID of the same form, in the URL of the shared drive.
+The data source stores the ID, since folder names are neither unique nor stable; the folder name entered next to it is only shown in the UI.
+
+### Client version
+
+The Python client and the `hops` CLI support Google Drive data sources from Hopsworks 5.3.0.
+Clients older than 5.3.0 do not know the Google Drive type and fail to list a feature store's data sources once it has one, so upgrade the client in environments that list data sources.
+
+## Creation in the UI
+
+### Step 1: Set up a new data source
+
+Head to the `Data Sources` view in Hopsworks and click `New data source`.
+Pick the `Google Drive` card, in the `Files & documents` category.
+
+<figure markdown>
+  ![Data Source Creation](../../../../assets/images/guides/fs/data_source/data_source_overview.png)
+  <figcaption>The Data Source view in the user interface</figcaption>
+</figure>
+
+### Step 2: Enter the folder and the key file
+
+<!-- TODO screenshot google_drive_creation.png to capture; uncomment once the file exists:
+<figure markdown>
+  ![Google Drive Data Source Creation](../../../../assets/images/guides/fs/data_source/google_drive_creation.png)
+  <figcaption>The Google Drive creation form</figcaption>
+</figure>
+-->
+
+1. **Name** and an optional **Description**.
+2. **Service account key file**: upload the JSON key file from your machine with `Upload new file`, or pick one already in the project with `From Project`.
+3. **Folder ID**: the ID copied from the folder's URL.
+4. **Folder name**: an optional label shown next to the ID in the UI; it is not used to find the folder.
+
+Click `Test connection` to check the key file.
+Hopsworks reads it from the project and checks that it is a service account key, with a `client_email` and a `private_key`, and answers with the service account's email and a reminder to share the folder with it, such as `Service account ingest@acme.iam.gserviceaccount.com; share folder 1AbCdEfGhIjKlMnOpQrStUvWxYz with it`.
+The test does not call Google Drive, so a folder that is not shared with the service account, or a project without the Drive API enabled, is only found by the first run of a files ingestion job; see [Troubleshooting](#troubleshooting) for the messages such a run shows.
+
+Click `Next` to save the data source and go on to the second step of the wizard, `Copy files into a dataset`, described in the [files ingestion guide][files-ingestion].
+The `Browse` button of the prefix is not available for Google Drive, so type the prefix.
+
+### Editing the data source
+
+The data source page shows the folder ID, the folder name, the key file path and the service account's email read from the key.
+Pick another key file to rotate the credentials; the next run of each files ingestion job uses it.
+
+## Using the Python client
+
+The key file must be in the project before the data source is created; upload it with the dataset API.
+
+```python
+import hopsworks
+from hsfs.storage_connector import GoogleDriveConnector
+
+
+project = hopsworks.login()
+fs = project.get_feature_store()
+
+key_path = project.get_dataset_api().upload("drive-sa.json", "Resources")
+
+drive = fs.create_data_source(
+    GoogleDriveConnector(
+        id=None,
+        name="handbook_drive",
+        featurestore_id=fs.id,
+        key_path=key_path,
+        folder_id="1AbCdEfGhIjKlMnOpQrStUvWxYz",
+        folder_name="Handbook",
+    )
+).storage_connector
+
+print(drive.service_account_email)  # from the key file; share the folder with it
+
+job = drive.ingest_files(dataset="handbook", prefix="2026/")
+```
+
+`key_path` is the path of the key file in the project, as returned by `upload`, or written out as `/Projects/<project>/Resources/drive-sa.json`.
+`service_account_email` is read-only and filled by Hopsworks from the key file.
+
+!!! api "API reference"
+
+    - <code class="doc-symbol doc-symbol-method"></code> [`FeatureStore.create_data_source`][hsfs.feature_store.FeatureStore.create_data_source]
+    - <code class="doc-symbol doc-symbol-method"></code> [`FeatureStore.get_data_source`][hsfs.feature_store.FeatureStore.get_data_source]
+    - <code class="doc-symbol doc-symbol-method"></code> [`DatasetApi.upload`][hopsworks_common.core.dataset_api.DatasetApi.upload]
+    - <code class="doc-symbol doc-symbol-class"></code> <autoref identifier="hsfs.storage_connector.GoogleDriveConnector" optional><code>GoogleDriveConnector</code></autoref>
+    - <code class="doc-symbol doc-symbol-class"></code> [`StorageConnector`][hsfs.storage_connector.StorageConnector]
+        - <code class="doc-symbol doc-symbol-method"></code> <autoref identifier="hsfs.storage_connector.StorageConnector.ingest_files" optional><code>ingest_files</code></autoref>
+    - <code class="doc-symbol doc-symbol-docs"></code> [Google Drive API](https://developers.google.com/workspace/drive/api/guides/about-sdk)
+
+    <a class="hops-api-cta" href="../../../../../python-api/hopsworks/">Browse the full Python API :material-arrow-right:</a>
+
+## Using the CLI
+
+```bash
+hops datasource create google-drive handbook_drive \
+    --key-file ./drive-sa.json \
+    --folder-id 1AbCdEfGhIjKlMnOpQrStUvWxYz --folder-name Handbook
+hops datasource ingest-files handbook_drive --dataset handbook --prefix 2026/
+```
+
+`--key-file` is the key file on your machine; the command checks that it is a service account key, uploads it to `Resources/datasources/<name>/` in the project and registers the data source with that path.
+For a key already in the project, pass its full HopsFS path with `--key-path` instead.
+
+## Next steps
+
+Copy the files under the folder into a dataset with a [files ingestion job][files-ingestion].
+The prefix of the job is a folder path below the shared folder, by folder names, and a run reads `gdrive://<folder ID>/<prefix>`, so an empty prefix copies the whole shared folder.
+The index feature group, when turned on, records `gdrive` in `source_type` and the same `gdrive://` URL in `source_url`.
+
+## Troubleshooting
+
+A run that cannot reach the folder fails before listing anything.
+Its execution on the job page shows `root path '<folder ID>' not found or not readable` followed by Google's answer, and the same text is in the execution logs.
+The answer tells which step of the setup is missing:
+
+| Google's answer | Cause | Fix |
+| --- | --- | --- |
+| `HttpError 403 ... Google Drive API has not been used in project <number> before or it is disabled` | The Drive API is not enabled in the Google Cloud project the service account belongs to. | Enable it at the link in the message, or in the [API library](https://console.cloud.google.com/apis/library/drive.googleapis.com). Wait a few minutes for the change to propagate, then re-run the job. |
+| `HttpError 404 ... File not found: <folder ID>` | The folder is not shared with the service account, or the ID is not a folder's ID. Drive answers `not found` for anything the caller cannot see, so an unshared folder looks the same as a wrong ID. | Share the folder with the service account's email as described under [Folder](#folder), or add the service account to the shared drive. Check the ID against the folder's URL. The service account's email is shown on the data source page. |
+| `HttpError 403 ... insufficientFilePermissions` or `cannotDownloadFile` on a file | The service account sees the folder but not that file, or the file's owner has disabled downloading for viewers. | Share the file, or turn `Viewers and commenters can download` back on; otherwise the file is counted as failed and the rest of the run goes on. |
+| `RefreshError: invalid_grant: Invalid JWT Signature` | The key in the uploaded JSON file is no longer valid: it was deleted or rotated in the Google Cloud console, or the service account was disabled. | Create a new JSON key for the service account, upload it, and pick it as the key file of the data source. The next run uses it. |
+| `RefreshError: invalid_grant: Invalid grant: account not found` | The service account was deleted. | Create a service account and key again, share the folder with the new email, and update the data source. |
+
+A `file_cache is only supported with oauth2client<4.0.0` line at the top of the logs is a notice of the Google client library and not an error.
+
+## Limitations
+
+- A Google Drive data source is read-only and files-only.
+  It backs no feature groups, cannot be read with Spark, and the dltHub table ingestion does not offer it.
+- Only files stored in Drive are copied.
+  Google Docs, Sheets, Slides, shortcuts and the other Google-native items have no file content to download, and the job does not export them; they are counted as `unsupported`, listed in the audit file and left out, without failing the run.
+  Files in the trash are not listed.
+  Two files with the same name in one folder are told apart by appending the Drive file ID to the later one; a file whose name contains a slash is counted as `unsupported`.
+  Exclude them with an exclude pattern on their names, or keep them in a folder outside the prefix.
+- Files are copied one at a time and the folder tree is listed in full on every run, so a very large folder is better split into several jobs with narrower prefixes.
+- Browsing the folder for a prefix is not available; type the prefix, as a path of folder names.
+- `Test connection` only checks the key file; sharing and the Drive API are checked by the first run, see [Troubleshooting](#troubleshooting).
+
+================================================================================
 # Usage
 Source: https://docs.hopsworks.ai/latest/user_guides/fs/data_source/usage/
 
@@ -6312,6 +6715,11 @@ This workflow is especially useful when you want to:
 
 For the full workflow, including schema selection, ingestion job configuration, loading strategies, and REST pagination, see [Ingest Data with dltHub][ingest-data-with-dlthub].
 
+## Copying Files into a Dataset
+
+An S3, GCS or ADLS data source can also copy the files under a prefix, whatever their format, into a dataset of the project with the same ingestion job in its files mode, once or on a schedule, with optional mirroring of deletions and a feature group that indexes the files.
+See [Copy files from S3, GCS or ADLS into a dataset][files-ingestion].
+
 ## Writing Training Data
 
 Data Sources are also used while writing training data to external sources.
@@ -6335,6 +6743,567 @@ For a detailed walkthrough on managing and utilizing training data, refer to the
 
 We have gone through the basic use cases of a data source.
 For more details about the API functionality for any specific connector type, checkout the [API section][hsfs.storage_connector.StorageConnector].
+
+================================================================================
+# Copy files into a dataset
+Source: https://docs.hopsworks.ai/latest/user_guides/fs/data_source/files_ingestion/
+
+# Copy files from S3, GCS, ADLS, SFTP or Google Drive into a dataset { #files-ingestion }
+
+## Introduction
+
+An [S3][data-source-s3], [GCS][data-source-gcs] or [ADLS](creation/adls.md) data source can do more than back external feature groups over tabular files.
+It can also copy the files under a prefix of its bucket or container, whatever their format, into a dataset of the project, either once or on a schedule.
+An [SFTP][data-source-sftp] or [Google Drive][data-source-google-drive] data source exists only for this, and copies the files under a path of the server or a folder of the Drive the same way.
+This is the **files mode** of the dltHub ingestion job that also [ingests tables into feature groups][ingest-data-with-dlthub].
+
+Each run lists the prefix, copies the files that are new or changed, skips the ones it already has, and writes a small CSV audit file of what it changed, so downstream jobs can process only what changed.
+Optionally, a run also deletes from the dataset the files that disappeared from the source, and keeps a feature group with one row per file.
+
+Data only flows from the source into Hopsworks.
+Changes made in the dataset are never written back to the bucket.
+
+Typical uses are document corpora for retrieval, agents and unstructured data pipelines, where the files are read from the dataset through the HopsFS mount of a job, a terminal or an app.
+Tabular files that should become feature groups are better served by an external feature group over the path, or by the table ingestion flow; see [Limitations](#limitations).
+
+## Prerequisites
+
+### Data source
+
+A data source of type S3, GCS, ADLS, SFTP or Google Drive in the project's feature store, with credentials that can list and read the prefix.
+Create it as described in the [S3][data-source-s3], [GCS][data-source-gcs], [ADLS](creation/adls.md), [SFTP][data-source-sftp] or [Google Drive][data-source-google-drive] guide.
+Other data source types are not supported; see [Limitations](#limitations).
+
+An S3 data source that authenticates with an IAM role must have a role mapping an administrator created with [AWS Role chaining](../../../setup_installation/admin/roleChaining.md); a data source without one is refused when the job is created.
+Hopsworks assumes the role when it starts the job and hands the job temporary credentials that live for `dlt_files_credentials_duration_seconds`, an hour by default.
+A run longer than that fails at the first request made with the expired credentials, so for a long first copy an administrator raises the setting, and before that the [maximum session duration of the role](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use.html#id_roles_use_view-role-max-session), which must allow it.
+Access key and secret, service account key file, service principal, SFTP password and SFTP private key credentials have no such limit.
+
+### Role
+
+Only data owners of the project can create, change or run a files ingestion job, because the copy widens access: every member who can read the dataset can read every copied file, whatever permissions the objects carry in the bucket.
+A scheduled run executes as the user who created the job, so when that user leaves the project, another data owner takes the job over by editing it.
+
+### Cluster version and environment
+
+Files ingestion is available from Hopsworks 5.3.0.
+The job runs in the `dlthub-ingestion-pipeline` environment, whose image ships with the cluster; the files mode needs the image of the same release as the backend, so a cluster that pins an older image cannot run it.
+The Python client and the `hops` CLI need the same version or later.
+
+### Cluster settings
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `data_source_audit_retention_days` | `7` | Days of audit files kept per dataset. `0` keeps them forever. |
+| `dlt_files_credentials_duration_seconds` | `3600` | Lifetime in seconds of the temporary credentials a run gets from an IAM-role S3 data source; the role's maximum session duration must allow it, and a longer run fails at the first expired request. |
+| `dlt_files_listing_timeout_seconds` | `3600` | Seconds a run waits for the listing of the prefix; see [How a run works](#how-a-run-works). |
+
+## Creation in the UI
+
+### Step 1: Open the data source
+
+Head to the `Data Sources` view in Hopsworks and open the data source, or create it and continue from its last step.
+Click `Next` to open the second step of the wizard.
+
+### Step 2: Choose `Copy files into a dataset`
+
+The second step offers two ways to use the data source: `External feature group over a path`, which keeps the files where they are, and `Copy files into a dataset`, which this guide covers.
+For an ADLS, SFTP or Google Drive data source only the second is offered, since those types back no feature groups.
+
+<!-- TODO screenshot files_ingestion_wizard.png to capture; uncomment once the file exists:
+<figure markdown>
+  ![Copy files into a dataset](../../../assets/images/guides/fs/data_source/files_ingestion_wizard.png)
+  <figcaption>The second step of the wizard, with Copy files into a dataset selected</figcaption>
+</figure>
+-->
+
+1. **Prefix**: the path inside the bucket or container whose files are copied, for example `handbook/2026/`.
+   It is relative to the root of the bucket or container; the path set on an S3 data source is not applied, so repeat it in the prefix when the files live under it.
+   For SFTP it is relative to the root path of the data source, and for Google Drive it is a path of folder names below the shared folder, so a run lists `sftp://<host>:<port><root path>/<prefix>` or `gdrive://<folder ID>/<prefix>`.
+   A prefix is a folder, not the start of a key: the job lists under `<prefix>/`, so `handbook` selects `handbook/a.pdf` but not `handbook-old/a.pdf`.
+   Click `Browse` to pick it from a listing of the bucket; each level lists its folders and files, with their size and modification time.
+   Browsing is not available for ADLS, SFTP and Google Drive, so type the prefix there.
+   An empty prefix copies the whole bucket, root path or folder; see [How a run works](#how-a-run-works) before doing that on a large one.
+2. **Include** and **Exclude**: glob patterns, one per line, matched against the path of each file relative to the prefix, not to the bucket.
+   With prefix `handbook/`, write `**/*.pdf`, not `handbook/**/*.pdf`.
+   `**` matches across folders, so `**/*.pdf` selects every PDF under the prefix and `**/~$*` excludes Office lock files.
+   A file is copied when it matches at least one include pattern, or all of them when there is none, and no exclude pattern.
+3. **Dataset**: a new dataset in the project root, or an existing one.
+   A new dataset is created editable by data owners only, and an existing one is accepted only with that permission, since every run writes into it as a data owner.
+   The platform datasets `Logs`, `Resources`, `Jupyter`, `Models`, and the training-datasets and feature-store datasets cannot be targets.
+   A dataset can be the target of at most one files ingestion job across all data sources of the project; choosing one that another job already copies into is refused.
+4. **Mirror deletions**: also delete from the dataset the files that are no longer under the prefix; see [Mirroring deletions](#mirroring-deletions).
+   Off by default, so a plain run only adds and updates.
+5. **Index the files in a feature group**: keep a feature group with one row per file; see [The file index](#the-file-index).
+   **Feature group** names it; empty means `files_<dataset>`.
+6. **Maximum file size** in MB; larger files are skipped and reported. Empty or `0` copies every file.
+7. **Schedule**: an optional schedule for recurring runs, as for any [scheduled job](../../projects/jobs/schedule_job.md): a [Quartz cron expression](https://www.quartz-scheduler.org/documentation/quartz-2.3.0/tutorials/crontrigger.html) in UTC, seconds first, so `0 0 2 ? * *` runs daily at 02:00.
+8. **Memory** and **CPU cores** of the job, `2048` MB and `1` core by default; downloads wait on the network most of the time, so memory matters more than cores.
+9. Under `Advanced`:
+    - **Files per page**: how many objects a listing request returns, `100` by default.
+    - **Parallel downloads**: how many files are downloaded at the same time, `4` by default and at most `16`; see [Parallel downloads](#parallel-downloads).
+    - **Fail on first error**: stop the run at the first file that fails instead of continuing with the others.
+    - **Transform script**: an optional Python file of the project that runs on every file before it is stored; see [Transforming files](#transforming-files).
+      **Keep the original files**, shown once a script is chosen, also stores each file as it is in the source.
+    - **Job name**: `<data source>_<dataset>_files` by default, with every character outside letters, digits and underscore replaced by `_`.
+    - **Alerts**: an alert receiver notified when a run fails.
+
+<!-- TODO screenshot files_ingestion_prefix_browser.png to capture; uncomment once the file exists:
+<figure markdown>
+  ![Prefix browser](../../../assets/images/guides/fs/data_source/files_ingestion_prefix_browser.png)
+  <figcaption>Browsing the bucket for the prefix</figcaption>
+</figure>
+-->
+
+Click `Create` to create the job, the dataset if it is new, and the index feature group if indexing is on.
+The job is also started unless you turn `Start the job after creation` off.
+
+### The job page
+
+The job appears in the `Jobs` view like any other ingestion job, and its page shows the data source, prefix, patterns and dataset it copies into.
+`Edit` changes the prefix, patterns, mirroring, indexing, size cap, transform script, schedule and resources; the data source and the dataset of a job cannot change, so create another job to copy into a different dataset.
+
+<!-- TODO screenshot files_ingestion_job.png to capture; uncomment once the file exists:
+<figure markdown>
+  ![Files ingestion job page](../../../assets/images/guides/fs/data_source/files_ingestion_job.png)
+  <figcaption>The page of a files ingestion job</figcaption>
+</figure>
+-->
+
+Each execution row shows the counters of the run: files listed (after the include and exclude patterns), copied, updated, skipped as unchanged, deleted, failed, oversized and unsupported, and the bytes copied.
+A run of a job with a transform script also shows the files it transformed and the files the script dropped.
+The `Audit` link of a run that changed something opens its audit CSV in the file browser; see [State and audit files](#state-and-audit-files).
+The execution logs show every file the run touched and the error of each file that failed.
+
+<!-- TODO screenshot files_ingestion_executions.png to capture; uncomment once the file exists:
+<figure markdown>
+  ![Executions of a files ingestion job](../../../assets/images/guides/fs/data_source/files_ingestion_executions.png)
+  <figcaption>The executions of a files ingestion job with their counters and audit link</figcaption>
+</figure>
+-->
+
+### Deleting the job
+
+Deleting the job removes its schedule, its credentials in the cluster and its state directory, and keeps the dataset and the index feature group by default.
+The delete dialog offers `Also delete the dataset` and `Also delete the index feature group`.
+The index is only deleted when it is the feature group the job created, so a feature group that existed before the job is never removed.
+A data source that still has files ingestion jobs cannot be deleted; delete the jobs first.
+
+<!-- TODO screenshot files_ingestion_delete.png to capture; uncomment once the file exists:
+<figure markdown>
+  ![Deleting a files ingestion job](../../../assets/images/guides/fs/data_source/files_ingestion_delete.png)
+  <figcaption>The delete dialog of a files ingestion job</figcaption>
+</figure>
+-->
+
+## Using the Python client
+
+`ingest_files` on an S3, GCS, ADLS, SFTP or Google Drive data source creates the job and returns it; other data source types raise.
+
+```python
+import hopsworks
+
+
+project = hopsworks.login()
+fs = project.get_feature_store()
+
+s3 = fs.get_data_source("acme_docs").storage_connector
+
+job = s3.ingest_files(
+    dataset="acme_docs_handbook",  # existing (owned) or new
+    prefix="handbook/2026/",  # a folder, from the bucket root; relative to it:
+    include=["**/*.pdf", "**/*.docx"],
+    exclude=["**/~$*"],
+    mirror_deletions=False,
+    index=False,  # True -> files_<dataset>; or a feature group name
+    max_file_size_mb=None,  # None or 0 -> no cap
+    schedule=None,  # Quartz cron in UTC, e.g. "0 0 2 ? * *" for daily at 02:00
+    resources=None,  # {"cores": 1, "memory": 2048, "gpus": 0}
+    name=None,  # job name, default "<data source>_<dataset>_files"
+    fail_on_first_error=False,
+    files_per_page=100,
+    copy_workers=4,  # files downloaded at the same time, 1 to 16
+    transform_script=None,  # e.g. "Resources/transform.py", see Transforming files
+    keep_original=False,  # with a script: also store the file as it is in the source
+)
+
+execution = job.run(await_termination=True)
+execution.files_progress  # counters of the run, None until the run wrote them
+job.last_stats  # the same for the latest execution
+
+job.job  # the hopsworks Job
+job.name, job.dataset_name, job.prefix, job.index_feature_group
+
+job = job.update(
+    prefix="handbook/",
+    include=["**/*.pdf"],
+    mirror_deletions=True,
+    index=True,
+    max_file_size_mb=500,
+)
+
+s3.get_files_ingestion_jobs()  # the files ingestion jobs of this data source
+
+job.delete(delete_files=False, delete_index=False)
+```
+
+`files_progress` and `last_stats` return the stats of the run as a dictionary with the keys of the stats file described in [State and audit files](#state-and-audit-files), plus `datasetName`, `connectorName`, `prefix` and `auditPath`, the absolute HopsFS path of the audit file.
+`prefix` is a folder relative to the root of the bucket or container, to the SFTP root path or to the Drive folder, as in the UI, and the patterns are relative to the prefix.
+`update` re-saves the job; a job's data source and dataset cannot change.
+`index` accepts a feature group name only while the job had no index; afterwards turning it on uses the name chosen then.
+`transform_script` and `keep_original` can be given to `update` too; `transform_script=None` removes the transform.
+
+!!! api "API reference"
+
+    - <code class="doc-symbol doc-symbol-method"></code> [`FeatureStore.get_data_source`][hsfs.feature_store.FeatureStore.get_data_source]
+    - <code class="doc-symbol doc-symbol-class"></code> [`StorageConnector`][hsfs.storage_connector.StorageConnector]
+        - <code class="doc-symbol doc-symbol-method"></code> `ingest_files`
+        - <code class="doc-symbol doc-symbol-method"></code> `get_files_ingestion_jobs`
+    - <code class="doc-symbol doc-symbol-class"></code> `FilesIngestionJob`
+        - <code class="doc-symbol doc-symbol-method"></code> `run`
+        - <code class="doc-symbol doc-symbol-method"></code> `update`
+        - <code class="doc-symbol doc-symbol-method"></code> `delete`
+        - <code class="doc-symbol doc-symbol-attribute"></code> `last_stats`
+    - <code class="doc-symbol doc-symbol-class"></code> `Execution`
+        - <code class="doc-symbol doc-symbol-attribute"></code> `files_progress`
+
+    <a class="hops-api-cta" href="../../../../python-api/hopsworks/">Browse the full Python API :material-arrow-right:</a>
+
+## Using the CLI
+
+```bash
+hops datasource ingest-files acme_docs --dataset acme_docs_handbook \
+  --prefix handbook/2026/ --include "**/*.pdf" --include "**/*.docx" \
+  --exclude "**/~$*" --cron "0 0 2 ? * *"
+hops datasource ingest-files acme_docs --dataset acme_docs_handbook \
+  --prefix handbook/ --mirror-deletions --index --max-file-size-mb 500 --no-run
+```
+
+The command creates the job, prints its name and, unless `--no-run`, starts a run and prints its execution id.
+`--include` and `--exclude` repeat; `--index` names the feature group `files_<dataset>` and `--index-name` chooses another name; `--name` sets the job name.
+`--copy-workers` sets how many files are downloaded at the same time.
+`--transform-script Resources/transform.py` runs a [transform script](#transforming-files) on every file, and `--keep-original` with it also stores the files as they are in the source.
+`hops datasource files-jobs acme_docs` lists the files ingestion jobs of the data source.
+Runs, schedules, logs and deletion of the job are managed with the `hops job` commands, as for any job.
+
+## How a run works
+
+The job runs as a Kubernetes pod of the `dlthub-ingestion-pipeline` environment, with the data source's credentials in a Secret and the job's configuration in a ConfigMap that are rewritten at every start, so a credential changed on the data source is used by the next run.
+The dataset and the state directory are reached through the pod's HopsFS mount.
+A run goes through these steps.
+
+1. **Lease**.
+   The run takes a lease on the dataset, `lease.json` in the state directory, and refreshes it every minute.
+   A run that finds a lease refreshed within the last five minutes by another execution exits without copying anything, as a success, with `another run is active` in its log; this is what happens when a schedule fires while the previous run is still copying.
+   A lease older than five minutes is taken over, so a killed run does not block the next one.
+2. **Listing**.
+   The run lists every object under the prefix, in pages of `Files per page`, and applies the include and exclude patterns.
+   The listing is full every run, with no incremental listing, so a run over a prefix with millions of objects spends most of its time listing; narrow the prefix, or split it across jobs, for very large buckets.
+   The run waits `dlt_files_listing_timeout_seconds`, an hour by default, for the listing; the timeout bounds the listing only, not the copies.
+   A listing that exceeds it fails the run with an incomplete listing, `listingComplete` false in the stats, and deletions are never mirrored from one.
+3. **Skip or copy**.
+   Each listed file is compared with its row in the manifest of the previous runs.
+   A file whose copy is in the dataset is skipped, and counted as `skipped`, when its size and entity tag match the previous copy, where the data source provides one: the ETag of S3, the etag of GCS and ADLS, and the version of Google Drive.
+   Otherwise, as on SFTP, it is skipped when its size and modification date match, so a file changed without a change of either is only copied again after it is deleted from the dataset.
+   A file over the size cap is counted as `oversized`, listed in the audit file, and not copied until it shrinks or the cap is raised.
+   A file that cannot be copied at all, such as a Google-native document, a symbolic link on an SFTP server or a Google Drive file whose name contains a slash, is counted as `unsupported`, listed in the audit file and left out; it does not fail the run.
+   An archived S3 object, in the `GLACIER` or `DEEP_ARCHIVE` storage class, is reported as `unsupported` the same way; restore it in S3 before a run can copy it.
+   A copy made before a file became `unsupported` stays in the dataset, also when deletions are mirrored, for as long as the file is still in the source.
+   Any other file is downloaded, several at a time, into a temporary file outside the dataset and renamed into place once complete, so readers of the dataset never see a partial file; it is counted as `copied` when new and `updated` when it replaced an earlier copy.
+   When the data source provides a checksum of the file, the download is verified against it before the rename: GCS, Google Drive, S3 objects uploaded in a single part, and ADLS files that have a content MD5 set.
+   The copy keeps the path relative to the prefix, so `handbook/2026/a/b.pdf` under prefix `handbook/2026/` lands at `<dataset>/a/b.pdf`.
+4. **Failures**.
+   A file that cannot be downloaded or written, or whose download does not match the checksum of the data source, is counted as `failed`, logged with its error, and the run continues with the next file unless `Fail on first error` is on.
+   The previous copy of a failed file, if any, stays in place and in the manifest, and the file is retried on the next run.
+   A run that cannot list the prefix, reach the dataset or write its state fails outright.
+5. **Mirroring and indexing**, when turned on; see the next sections.
+6. **Stats and audit**.
+   The run writes its stats file and, when it changed something, its audit file, then releases the lease.
+
+The outcome of a run is its `status` in the stats file and the state of its execution:
+
+| Status | Exit code | Execution | Meaning |
+| --- | --- | --- | --- |
+| `ok` | `0` | `FINISHED` | Every listed file is in the dataset, copied or unchanged; oversized files are reported but do not fail the run. |
+| `partial` | `2` | `FAILED` | Some files failed, or the prefix listed nothing while the dataset holds copies; the successful copies are kept and the failed ones are retried on the next run. |
+| `failed` | `1` | `FAILED` | The run stopped on an error, named in `error` and in the logs; with `Fail on first error`, that of the first file. |
+
+A partial run fails its execution so that the alert receiver is notified and the execution row shows it; the dataset still holds every file that was copied.
+
+A run that is killed, or that loses its credentials when an IAM role session expires, leaves no partial file in the dataset, since copies are renamed into place only when complete, and leaves its lease to expire.
+The manifest is written whole at the end of a run, so the files such a run copied are compared by size and modification date again on the next run and found unchanged.
+
+## Transforming files
+
+By default a file is stored exactly as it is in the data source.
+A job with a transform script runs your Python code on every file after it is downloaded and verified and before anything of it is in the dataset, for example to redact text, to convert a format or an encoding, to decompress, or to leave out files by their content.
+
+### The script
+
+The script is a `.py` file in the project, uploaded like any other file, for example to `Resources`.
+It defines one subclass of `HopsFileTransformer`:
+
+```python
+# Resources/transform.py
+import os
+
+from dlt.destinations.impl.hopsworks_fg import HopsFileTransformer
+
+
+class RedactText(HopsFileTransformer):
+    def transform(self, path: str, context: dict) -> str | None:
+        if context["file_name"].startswith("~"):
+            return None  # store nothing of this file
+        name = os.path.splitext(context["file_name"])[0] + ".txt"
+        out = os.path.join(context["work_dir"], name)
+        with open(path, errors="replace") as src, open(out, "w") as dst:
+            dst.write(src.read().replace("CONFIDENTIAL", "***"))
+        return out
+```
+
+`path` is the downloaded file on the local disk of the job.
+The method returns one of:
+
+- the path of a new file written under `context["work_dir"]`; its name becomes the name of the stored file, so a transform can change the extension;
+- `path` itself, when the file was changed in place or is to be stored as it is;
+- `None`, to store no output for this file.
+
+`context` describes the file:
+
+| Key | Content |
+| --- | --- |
+| `relative_path`, `file_name` | the path relative to the prefix, and its last part |
+| `source_url` | the object in the data source |
+| `size_bytes`, `modified_at`, `mime_type` | as listed by the data source |
+| `etag`, `source_id`, `source_content_type`, `created_at` | the source metadata of [the file index](#the-file-index), when the data source provides it |
+| `connector`, `source_type`, `dataset`, `job_name`, `execution_id` | the job and the run |
+| `keep_original` | whether the job keeps the original files |
+| `work_dir` | a scratch directory of this file, removed after the file is stored |
+
+The base class is imported from the job's environment, so the import fails in a notebook or a terminal; that is expected, since the script is only ever loaded by the job.
+A library the script imports must be installed in the environment the job runs in: clone `dlthub-ingestion-pipeline`, install it there and choose the clone as the job's environment.
+
+### Where the files land
+
+| | Original file | Output of the script |
+| --- | --- | --- |
+| **Keep the original files** off (the default) | not stored | `<dataset>/<folder of the file>/<returned name>`, which is the path of the source file when the name is unchanged |
+| **Keep the original files** on | `<dataset>/<relative path>`, as without a script | `<dataset>/_transformed/<folder of the file>/<returned name>` |
+
+So with the script above, `a/report.docx` is stored as `a/report.txt`, or, with the originals kept, as `a/report.docx` and `_transformed/a/report.txt`.
+
+When the originals are kept, `path` is the stored original itself: read it, and write the output under `work_dir`.
+Returning `path` or `None` then stores no separate output.
+When they are not kept, a file the script returns `None` for is counted as `dropped` and nothing of it is stored; it is not downloaded again until it changes in the source.
+
+Two source files must not produce the same stored path, as `a.docx` and `a.pdf` both would with the script above.
+The second one fails with `output path ... is already used by ...`; give such outputs different names, for example by keeping the source extension in the name.
+
+### Changes and failures
+
+- **A file changed in the source** is downloaded and transformed again, like a plain copy; the skip rule compares the source file, not the output.
+- **A changed script**, whether another file is chosen or the same file is edited, processes every file again on the next run.
+  With the originals kept, the run reads them from the dataset and downloads nothing.
+  Without them, every file is downloaded again.
+- **Removing the script** turns the copies back into plain ones on the next run and deletes the outputs.
+- **Turning `Keep the original files` on** downloads the files again to store the originals.
+  Turning it off leaves the originals that are already stored where they are.
+- **A script that raises** fails that file only, with `transform failed: <error>` among the failed files, and the run continues and ends as `partial`.
+  Without originals nothing of the file is stored; with originals the original is stored and the next run transforms it again without a download.
+- **A script that cannot be loaded**, because the file is missing, does not import, or defines no `HopsFileTransformer`, fails the run before it lists anything, and the dataset is left as it was.
+
+[Mirroring deletions](#mirroring-deletions) removes the original and the output of a file that is gone from the source.
+
+The script runs once per file, one file at a time, inside the copy; [parallel downloads](#parallel-downloads) fetch the files ahead of it, they do not run it in parallel.
+Keep it to work that is cheap per file; parsing documents, chunking and embedding are better done by a separate job that reads [the file index](#the-file-index), which keeps the copy fast and repeatable.
+
+## Parallel downloads
+
+A run downloads `4` files at the same time by default; **Parallel downloads** in the UI, `copy_workers` in the Python client and `--copy-workers` in the CLI set a number from `1` to `16`.
+Only the downloads run in parallel.
+Deciding whether a file is skipped, running the transform script, moving the file into the dataset and recording it all happen in the order of the listing, one file at a time, so a run stores the same files with any setting.
+
+| Situation | Setting |
+| --- | --- |
+| Many small files | Raise it; the time per file is mostly the round trip to the source. |
+| A few large files | Leave it; the network or the source's bandwidth is the limit, not the number of downloads. |
+| The source throttles or answers with rate-limit errors, as Google Drive does under load | Lower it. |
+| An SFTP server that limits the sessions of one user | Lower it, or set `1`. |
+
+On SFTP and Google Drive every parallel download uses its own connection to the source, in addition to the one that lists the files.
+When the source refuses an additional connection the job logs a warning and downloads those files one at a time over the connection it has; no file fails because of it.
+Downloaded files wait in the job's temporary directory until their turn, at most twice the setting at any time, and count towards the project's storage quota while they wait.
+
+## Mirroring deletions
+
+With `Mirror deletions` on, a run that completed its listing without any failed file deletes from the dataset every file whose source object is gone from the prefix or no longer matches the patterns, and counts them as `deleted`.
+Empty folders left behind are removed too.
+
+Deletions are skipped, and `deletionsSkipped` is set in the stats, whenever the run cannot be sure the file is really gone:
+
+- the listing was incomplete, because it timed out or failed part way;
+- any file failed to copy in this run, since a listing problem and a copy problem can have the same cause;
+- the listing was complete but empty while the previous run had copied files.
+  The run then ends as `partial` with the error that the prefix listed nothing, so a prefix typo or a moved folder cannot empty the dataset.
+  Fix the prefix, or empty the dataset by hand when the source is really empty.
+
+The next run that lists and copies cleanly performs the deletions.
+A run with mirroring off never deletes, so a file removed from the prefix stays in the dataset until mirroring is turned on or a data owner deletes it.
+
+Mirroring only touches files the job copied, that is, files with a row in the manifest.
+Files that a data owner placed in the dataset by other means are left alone, but a file with the same relative path as a source object is overwritten by it.
+
+## State and audit files
+
+The job keeps its state in the project at:
+
+```text
+DataSources/<data source>/files/<dataset>/
+```
+
+| File | Written by | Content |
+| --- | --- | --- |
+| `owner.json` | Hopsworks, when the job is created | The job that copies into this dataset: `jobId`, `jobName`, `connectorId`, `connectorName`, `datasetName`, `createdAt`. A second files job on the same dataset is refused while it exists. |
+| `lease.json` | the run | `executionId`, `pod`, `startedAt` and `heartbeat` of the run that holds the dataset; see [How a run works](#how-a-run-works). |
+| `manifest.jsonl` | the run | One JSON object per file in the dataset: `file_id` (SHA-1 of the source URL), `source_url`, `relative_path`, `hopsfs_path`, `file_name`, `file_type`, `mime_type`, `size_bytes`, `modified_at`, `etag` (entity tag in the data source, empty for SFTP), `source_id`, `source_content_type`, `created_at`, `content_hash` (SHA-256 of the copy), `execution_id` and `copied_at` of the run that copied it. With a [transform script](#transforming-files) there is still one object per source file, with `original_path` and `output_path` naming the files stored for it, `source_size_bytes`, and `transform_hash`, the SHA-256 of the script; `hopsfs_path`, `file_name`, `size_bytes` and `content_hash` then describe the output. Replaced atomically at the end of each run. |
+| `<execution id>_files_stats.json` | the run, also when it fails | The outcome of the run, described below. |
+| `audit/date=<YYYY-MM-DD>/<HHMMSS>Z_<execution id>.csv` | the run, when it changed something | One row per changed file, described below. |
+
+The stats file holds the counters shown in the UI and returned by `files_progress`:
+
+```json
+{
+  "executionId": 4711,
+  "startedAt": "2026-11-07T10:15:00Z",
+  "finishedAt": "2026-11-07T10:21:30Z",
+  "status": "partial",
+  "listed": 120,
+  "copied": 10,
+  "updated": 2,
+  "skipped": 100,
+  "deleted": 3,
+  "failed": 1,
+  "oversized": 4,
+  "unsupported": 0,
+  "transformed": 0,
+  "dropped": 0,
+  "bytesCopied": 123456,
+  "listingComplete": true,
+  "deletionsSkipped": true,
+  "indexed": 12,
+  "error": null,
+  "auditFile": "audit/date=2026-11-07/101500Z_4711.csv",
+  "failedFiles": [{"relativePath": "a/b.pdf", "error": "..."}]
+}
+```
+
+`failedFiles` lists at most 100 files; the logs list them all.
+`auditFile` is relative to the state directory and null when the run changed nothing.
+
+The audit file has the same columns as the [SharePoint](creation/sharepoint.md#the-audit-log) audit log:
+
+```csv
+execution_id,op,kind,path,src_path
+4711,copied,file,a/b.pdf,s3://acme-docs/handbook/2026/a/b.pdf
+4711,updated,file,a/c.pdf,s3://acme-docs/handbook/2026/a/c.pdf
+4711,deleted,file,old/d.pdf,s3://acme-docs/handbook/2026/old/d.pdf
+4711,failed,file,a/e.pdf,s3://acme-docs/handbook/2026/a/e.pdf
+4711,oversized,file,video/f.mp4,s3://acme-docs/handbook/2026/video/f.mp4
+```
+
+`op` is `copied`, `updated`, `deleted`, `failed`, `oversized`, `unsupported`, `transformed` or `dropped`, `kind` is always `file`, `path` is the path relative to the dataset root and `src_path` the source URL.
+A `transformed` row names the output of a [transform script](#transforming-files) when it is stored under another path than the source file's.
+
+The `date=` directories are Hive-style partitions, so a filter on `date` reads only the matching days.
+From a Python job, with DuckDB from the `python-feature-pipeline` environment:
+
+```python
+import duckdb
+
+
+changes = duckdb.sql(
+    """
+    SELECT date, execution_id, op, path, src_path
+    FROM read_csv('/hopsfs/DataSources/acme_docs/files/acme_docs_handbook/audit/*/*.csv',
+                  hive_partitioning = true,
+                  columns = {'execution_id': 'BIGINT', 'op': 'VARCHAR',
+                             'kind': 'VARCHAR', 'path': 'VARCHAR',
+                             'src_path': 'VARCHAR'})
+    WHERE date >= DATE '2026-11-01' AND op IN ('copied', 'updated')
+    """
+).df()
+```
+
+Each run deletes the audit days older than `data_source_audit_retention_days`.
+
+## The file index
+
+A job with indexing on keeps version 1 of a Delta feature group, `files_<dataset>` by default, with one row per file in the dataset.
+Hopsworks creates it with the job, offline only and without statistics, with `file_id` as primary key and `ingestion_date` as partition key, and the job page links it.
+
+| Column | Content |
+| --- | --- |
+| `file_id` | SHA-1 of the source URL, the primary key; it stays the same as long as the object keeps its key |
+| `connector`, `source_type` | the data source and its type, `s3`, `gcs`, `adls`, `sftp` or `gdrive` |
+| `file_name`, `file_type` | the name, and its extension in lowercase |
+| `relative_path` | the path relative to the prefix and to the dataset root |
+| `hopsfs_path` | the copy in the dataset, `/Projects/<project>/<dataset>/...` |
+| `source_url` | the object, as `s3://`, `gs://`, `az://`, `sftp://` or `gdrive://` URL |
+| `mime_type`, `size_bytes` | content type, from the extension, and size in bytes |
+| `modified_at` | the object's last modification time, UTC |
+| `content_hash` | SHA-256 of the copy |
+| `etag` | the entity tag in the data source: the ETag of S3, the etag of GCS and ADLS, the version of Google Drive; null for SFTP |
+| `source_id` | the identifier of the file in the data source: the file ID of Google Drive, the generation of GCS, the version ID of ADLS |
+| `source_content_type` | the content type recorded in the data source |
+| `created_at` | the creation time in the data source |
+| `original_hopsfs_path` | for a job with a [transform script](#transforming-files) that keeps the originals: the file as it is in the source, while `hopsfs_path`, `file_name`, `file_type`, `size_bytes` and `content_hash` describe the output of the script; null otherwise |
+| `execution_id`, `indexed_at` | the run that last wrote the row, and when |
+| `ingestion_date` | the partition: the UTC day the file was first indexed, which is the day it was copied in, or for a file already in the dataset, the day indexing was turned on |
+
+The table holds no file content; the file is in the dataset at `hopsfs_path`.
+A file a transform script stored nothing of has no row.
+
+After mirroring, each run compares the manifest with the table:
+
+- A file that has no row, or whose `relative_path`, `size_bytes`, `modified_at` or `content_hash` changed, is written.
+  A new file goes into today's partition; a changed file keeps the partition of the day it was first indexed.
+- The row of a file that mirroring deleted is removed.
+- A file whose copy failed keeps its current row, or gets none, until a run copies it.
+
+The rows are written and deleted with delta-rs through the feature group's `insert` and `remove_rows`, so each run adds commits to the feature group's activity, and a run compacts and vacuums the table afterwards; see [Delta maintenance][delta-maintenance-feature-group].
+Indexing can be turned on for an existing job: its next run indexes every file in the manifest.
+Turning it off keeps the feature group.
+The name of an index must not be that of an existing feature group, and a job deletes only the feature group it created.
+
+In a terminal, the feature store is mounted at `/hopsfs/featurestore/<project>_featurestore.db/`, and the DuckDB CLI reads the index with its `delta` extension:
+
+```bash
+duckdb -c "SELECT file_name, size_bytes, modified_at, hopsfs_path
+FROM delta_scan('/hopsfs/featurestore/acme_featurestore.db/files_acme_docs_handbook_1')
+WHERE file_type = 'pdf' ORDER BY modified_at DESC LIMIT 20;"
+```
+
+Use `delta_scan`, not `read_parquet` over the partition directories: until a vacuum, those directories also hold the files of deleted and rewritten rows.
+
+Claude and the other coding agents in a terminal load the `hops-files-search` skill for questions about the copied files; it finds the index of a dataset and shapes the queries this way.
+
+## Limitations
+
+- Only S3, GCS, ADLS, SFTP and Google Drive data sources are supported.
+  [SharePoint](creation/sharepoint.md), Gmail and Outlook have their own sync jobs.
+- The listing is full on every run, so a prefix with millions of objects or a very large total size is better split into several jobs with narrower prefixes.
+- A run on an IAM-role S3 data source cannot outlast `dlt_files_credentials_duration_seconds`.
+- Files are copied as they are, or as a [transform script](#transforming-files) returns them, one output per source file.
+  Turning tabular files into feature groups is not part of this job; use an [external feature group](../feature_group/create_external.md) over the path or the [table ingestion flow][ingest-data-with-dlthub] instead.
+- Browsing the source for a prefix is not available for ADLS, SFTP and Google Drive; type the prefix.
+- One job per dataset: a dataset that one job copies into cannot be the target of another, whatever its data source.
+- The backend and the `dlthub-ingestion-pipeline` image must be of the same release; an older image does not know the files mode.
+
+## Next steps
+
+- Read the copied files from a job or an app through the HopsFS mount, at `/hopsfs/<dataset>/...`, and the index with the [feature group API][create-feature-group].
+- [Share the dataset](../../projects/datasets/sharing.md) read-only with another project.
+- Ingest tables of an S3, GCS or ADLS data source into feature groups with the [dltHub ingestion job][ingest-data-with-dlthub].
 
 ================================================================================
 # Feature Group User Guides
@@ -7541,6 +8510,7 @@ This ingestion flow supports multiple data sources:
 - CRM and REST API sources use the ingestion path only.
 - Incremental loading is available for SQL and REST API sources.
 - CRM sources currently use full-load ingestion.
+- S3, GCS and ADLS object stores are not table sources of this flow; the same job copies their files into a dataset instead, see [Copy files from S3, GCS or ADLS into a dataset][files-ingestion].
 
 ## Step 1: Open the Data Source and start Feature Group creation
 
@@ -19575,6 +20545,10 @@ The `INFERENCE / AGENTS / APPS` environments can be used in a deployment using a
 - `vllm-inference-pipeline` to load and serve LLMs with vLLM inference engine
 - `minimal-inference-pipeline` to install your own custom framework, contains a minimal set of dependencies
 
+A TensorFlow Serving deployment runs its transformer in `tensorflow-inference-pipeline` unless the deployment names another environment.
+A cluster installed with the Helm value `hopsworks.variables.tensorflow_inference_enabled` set to `false` has no `tensorflow-inference-pipeline`, which keeps 3.65 GB of image layers out of its registry.
+On such a cluster a deployment that would run in it is refused, because its image is not in the registry, so name another environment for the transformer, such as `pandas-inference-pipeline`.
+
 ## Next steps
 
 In this guide you learned how to find the bundled python environments and where they can be used.
@@ -22672,6 +23646,144 @@ This matches what most users expect ("turn on catchup ⇒ see the backfill"), bu
 Airflow coordinates multiple schedulers with PostgreSQL advisory locks (`pg_try_advisory_xact_lock`). Hopsworks uses Payara's cluster primary election: the scheduler timer only fires on the primary node. Reconciliation happens on the first primary-owned tick after startup. Correctness is backed at the application layer: `executeWithCron` seeds `startingActive = countActiveByJob(...)` once per tick and tracks an additive `firedThisTick` counter, which is monotonic and independent of RonDB COUNT read-after-write lag. This replaces an earlier `(job_id, logical_date)` unique index that was too strict: it blocked legitimate retry / manual-rerun / re-backfill flows that share a logical_date.
 
 ================================================================================
+# Run with Different Resources
+Source: https://docs.hopsworks.ai/latest/user_guides/projects/jobs/run_with_resources/
+
+# How To Run a Job with Different Resources
+
+## Introduction
+
+A job has one compute configuration: the cores, memory and GPUs every execution gets.
+Some runs need more than the others, such as a backfill over a year of data or a retry after an out-of-memory kill.
+For those you can give a single execution resources of its own when you start it.
+
+The job itself is not changed.
+You give only the fields you want to change, every other field keeps the job's value, and the next plain run uses the job's configuration again.
+Each execution records what it was given, so you can see later which runs had different resources.
+
+!!! note "Not available for Python Apps"
+    A Python App is a long-running deployment, not a run of a job.
+    Change its resources in the app's own configuration.
+
+## UI
+
+On the job, open the menu next to the `Run` button and choose `Run with different arguments or resources`.
+In the `Run job` dialog, tick `Run with different resources`.
+
+The dialog then shows the resource fields of the job, filled in with the job's current values.
+Change the ones this run needs and click `Run`.
+Only the fields you changed are sent; a field you leave as it is follows the job, also if the job is edited before the execution starts.
+
+The details of an execution show what it was given under `Resources of this run`.
+The field is absent for an execution that ran with the job's resources.
+
+## Python API
+
+Pass `resources` to `job.run()` with the fields to change, under the names they have in the job configuration (see `job.config`):
+
+```python
+import hopsworks
+
+
+project = hopsworks.login()
+job = project.get_job_api().get_job("my_job")
+
+# This run gets 16 GB and a GPU; the cores, and everything else, stay the job's
+execution = job.run(resources={"resourceConfig": {"memory": 16384, "gpus": 1}})
+
+# What the run was given; None for a run with the job's resources
+print(execution.resources)
+```
+
+A Spark job uses the names of its own configuration:
+
+```python
+spark_job = project.get_job_api().get_job("my_spark_job")
+execution = spark_job.run(
+    resources={
+        "spark.executor.memory": 16384,
+        "spark.dynamicAllocation.maxExecutors": 8,
+    }
+)
+```
+
+A Spark job uses dynamic allocation unless you turned it off, and the number of executors then follows `spark.dynamicAllocation.minExecutors` and `spark.dynamicAllocation.maxExecutors`.
+`spark.executor.instances` sets the number of executors of a job with static executors, and has no effect while dynamic allocation is on.
+
+!!! api "API reference"
+
+    - <code class="doc-symbol doc-symbol-class"></code> [`Job`][hopsworks_common.job.Job]
+        - <code class="doc-symbol doc-symbol-method"></code> [`run`][hopsworks_common.job.Job.run]
+    - <code class="doc-symbol doc-symbol-class"></code> [`Execution`][hopsworks_common.execution.Execution]
+        - <code class="doc-symbol doc-symbol-attribute"></code> [`resources`][hopsworks_common.execution.Execution.resources]
+
+    <a class="hops-api-cta" href="../../../../python-api/hopsworks/">Browse the full Python API :material-arrow-right:</a>
+
+## CLI
+
+`hops job run` takes the same fields as JSON:
+
+```bash
+hops job run my_job --resources '{"resourceConfig": {"memory": 16384}}'
+```
+
+## Airflow
+
+In a DAG you [write yourself][write-your-own-dag], `HopsworksLaunchOperator` takes the fields in `job_resources`:
+
+```python
+from hopsworks.airflow.operators import HopsworksLaunchOperator
+
+
+HopsworksLaunchOperator(
+    task_id="backfill_profiles_fg",
+    project_id=42,
+    job_name="profiles_fg",
+    job_resources={"resourceConfig": {"memory": 16384}},
+)
+```
+
+The operator starts the execution and returns; to wait for it, add a `HopsworksJobSuccessSensor` after it, as in [Write your own DAG][write-your-own-dag].
+
+!!! warning "`job_resources`, not `resources`"
+    Airflow keeps the operator argument `resources` for the resources of the Airflow task itself.
+    A value passed there does not reach the Hopsworks job.
+
+`job_resources` is a templated field, so its values can come from the DAG run, for example from `params`.
+
+## Fields
+
+Memory is in MB, as in the job configuration.
+
+| Job type | Fields |
+| --- | --- |
+| Python, Jupyter Notebook, ingestion and agent jobs | `resourceConfig`: `cores`, `memory`, `gpus`, `shmSize`, `diskGb` |
+| | `hopsfsMountConfig`: `memory`, `cores`, `namenodeConnections` |
+| Docker | `resourceConfig`: `cores`, `memory`, `gpus`, `shmSize`, `diskGb` |
+| Spark and PySpark | `spark.driver.cores`, `spark.driver.memory`, `spark.driver.memoryOverheadFactor`, `driverDiskGb` |
+| | `spark.executor.cores`, `spark.executor.memory`, `spark.executor.memoryOverheadFactor`, `executorDiskGb`, `spark.executor.instances` |
+| | `spark.dynamicAllocation.enabled`, `spark.dynamicAllocation.minExecutors`, `spark.dynamicAllocation.maxExecutors`, `spark.dynamicAllocation.initialExecutors` |
+| Ray | `driverCores`, `driverMemory`, `driverGpus`, `driverDiskGb` |
+| | `workerCores`, `workerMemory`, `workerGpus`, `workerDiskGb`, `workerMinInstances`, `workerMaxInstances` |
+| | `hopsfsMountConfig`: `memory`, `cores`, `namenodeConnections` |
+
+A field that is not in the list for the job's type, or a value that is not valid for the field, is refused when the execution is started, and nothing runs.
+
+A Docker job does not mount HopsFS, so it takes no `hopsfsMountConfig`.
+
+!!! note "Ingestion jobs with several tables"
+    A table that has resources of its own keeps them.
+    The resources given for the execution replace only those of the job.
+
+!!! note "Ingestion jobs on a cluster without the HopsFS CSI driver"
+    On such a cluster the HopsFS mount runs inside the ingestion container and has no memory or cores of its own.
+    Of `hopsfsMountConfig` only `namenodeConnections` is accepted; give the mount more memory or cores through `resourceConfig`.
+
+!!! note "Spark jobs on a cluster with Kueue"
+    Dynamic allocation is off for Spark jobs that run under Kueue.
+    Resources given for an execution cannot turn it back on.
+
+================================================================================
 # Batch Feature Pipelines
 Source: https://docs.hopsworks.ai/latest/user_guides/projects/jobs/batch_feature_pipeline/
 
@@ -23254,14 +24366,14 @@ HopsworksLaunchOperator(
     project_id=42,
     job_name="profiles_fg",
     args="",
-    wait_for_completion=True,
 )
 ```
 
 Provide the Airflow task name (`task_id`) and the Hopsworks job information (`project_id`, `job_name`, `args`).
-Set `wait_for_completion=True` to block until the job execution finishes.
+The operator starts the execution and returns; add the sensor below to wait until it finishes.
+To give the execution more resources than the job has, without changing the job, pass `job_resources`; see [How To Run a Job with Different Resources][how-to-run-a-job-with-different-resources].
 
-Wait for a job's most recent execution to be successful:
+Wait for the execution a launch task started to be successful:
 
 ```python
 from hopsworks.airflow.sensors import HopsworksJobSuccessSensor
@@ -23271,8 +24383,11 @@ HopsworksJobSuccessSensor(
     task_id="wait_for_profiles_fg",
     project_id=42,
     job_name="profiles_fg",
+    launch_task_id="profiles_fg_0",
 )
 ```
+
+`launch_task_id` is the `task_id` of the `HopsworksLaunchOperator` whose execution the sensor waits for.
 
 Wait for a HopsFS path to exist (replaces the Airflow 1.x `HopsworksHdfsSensor` plugin):
 
@@ -40961,6 +42076,7 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `agent_base_image_name` | String | `agent-job` | Settings.java |
 | `agent_default_max_turns` | Integer | `50` | Settings.java |
 | `agent_default_model` | String | `claude-sonnet-4-5` | Settings.java |
+| `agent_deployment_claude_login_enabled` | Boolean | `true` | Settings.java |
 | `agent_deployment_otel_cpu` | Double | `0.5` | Settings.java |
 | `agent_deployment_otel_enabled` | Boolean | `true` | Settings.java |
 | `agent_deployment_otel_image` | String | `docker.hops.works/hops-otel:5.0.0-SNAPSHOT` | Settings.java |
@@ -40975,6 +42091,7 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `alert_manager_config_map` | String | `hopsworks-release-alertmanager` | KubeSettings.java |
 | `alert_receiver_load_timeout` | Integer | `300` | Settings.java |
 | `anaconda_enabled` | Boolean | `true` | Settings.java |
+| `api_key_auth_cache_ttl_seconds` | Integer | `0` | Settings.java |
 | `app_kill_grace_period_seconds` | Long | `2` | Settings.java |
 | `application_certificate_validity_period` | String | `3d` | CAConf.java |
 | `arrow_flight_read_timeout_as_ms` | Long | `180000` | Settings.java |
@@ -41020,6 +42137,14 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `csi_driver_enabled` | Boolean | `false` | Settings.java |
 | `csi_driver_name` | String | `hopsfs.csi.logicalclocks.com` | Settings.java |
 | `csi_sidecar_image` | String | `docker.hops.works/hopsworks/hopsfs-csi:0.1.0-SNAPSHOT` | Settings.java |
+| `data_source_audit_retention_days` | Integer | `7` | Settings.java |
+| `data_source_sync_job_cores` | Double | `0.5` | Settings.java |
+| `data_source_sync_job_memory` | Integer | `1024` | Settings.java |
+| `data_source_sync_lifecycle_stale_minutes` | Integer | `10` | Settings.java |
+| `data_source_sync_max_run_minutes` | Integer | `0` | Settings.java |
+| `data_source_sync_min_interval_minutes` | Integer | `5` | Settings.java |
+| `data_source_sync_stop_wait_seconds` | Integer | `120` | Settings.java |
+| `data_source_sync_transfers` | Integer | `4` | Settings.java |
 | `databricks_account_host_allowlist` | String | `accounts.cloud.databricks.com,accounts.azuredatabricks.net,accounts.gcp.databricks.com` | Settings.java |
 | `databricks_oauth_allow_private_ranges` | Boolean | `false` | Settings.java |
 | `default_feature_store_project_id` | Integer | `-1` | Settings.java |
@@ -41057,7 +42182,6 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `docker_job_mount_allowed` | Boolean | `true` | Settings.java |
 | `docker_job_mounts_list` | String | *(empty string)* | Settings.java |
 | `docker_job_uid_strict` | Boolean | `true` | Settings.java |
-| `docker_mounts` | String | `/srv/hops/hadoop/etc/hadoop,/srv/hops/spark,/srv/hops/flink` | Settings.java |
 | `docker_namespace` | String | *(empty string)* | Settings.java |
 | `docker_operations_allow_hermetic_custom_commands` | Boolean | `false` | Settings.java |
 | `docker_operations_backoff_limit` | Integer | `0` | Settings.java |
@@ -41125,25 +42249,29 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `enable_bring_your_own_kafka` | Boolean | `false` | Settings.java |
 | `enable_crm_storage_connectors` | Boolean | `true` | Settings.java |
 | `enable_custom_branding` | Boolean | `false` | Settings.java |
+| `enable_custom_project_roles` | Boolean | `false` | Settings.java |
 | `enable_data_science_profile` | Boolean | `false` | Settings.java |
 | `enable_elasticsearch_storage_connectors` | Boolean | `false` | Settings.java |
 | `enable_feature_monitoring` | Boolean | `false` | Settings.java |
 | `enable_gcs_storage_connectors` | Boolean | `false` | Settings.java |
 | `enable_glue_storage_connectors` | Boolean | `true` | Settings.java |
 | `enable_gmail_storage_connectors` | Boolean | `true` | Settings.java |
-| `enable_outlook_storage_connectors` | Boolean | `true` | Settings.java |
 | `enable_google_sheets_storage_connectors` | Boolean | `true` | Settings.java |
 | `enable_hopsfsmount_page_cache_in_jobs` | Boolean | `true` | Settings.java |
 | `enable_hopsfsmount_page_cache_in_jupyter` | Boolean | `false` | Settings.java |
+| `enable_hopsworks_storage_connectors` | Boolean | `true` | Settings.java |
 | `enable_kafka_storage_connectors` | Boolean | `true` | Settings.java |
 | `enable_mongodb_storage_connectors` | Boolean | `true` | Settings.java |
 | `enable_opencost` | Boolean | `false` | Settings.java |
 | `enable_opensearch_storage_connectors` | Boolean | `false` | Settings.java |
+| `enable_outlook_storage_connectors` | Boolean | `true` | Settings.java |
 | `enable_project_observer_role` | Boolean | `false` | Settings.java |
+| `enable_public_apps` | Boolean | `false` | Settings.java |
 | `enable_read_only_git_repositories` | Boolean | `false` | Settings.java |
 | `enable_redshift_storage_connectors` | Boolean | `true` | Settings.java |
 | `enable_rest_storage_connectors` | Boolean | `true` | Settings.java |
 | `enable_sap_hana_storage_connectors` | Boolean | `true` | Settings.java |
+| `enable_sharepoint_storage_connectors` | Boolean | `true` | Settings.java |
 | `enable_snowflake_storage_connectors` | Boolean | `true` | Settings.java |
 | `enable_sql_storage_connectors` | Boolean | `true` | Settings.java |
 | `enable_terminal` | Boolean | `false` | Settings.java |
@@ -41175,7 +42303,6 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `file_preview_txt_size` | Integer | `100` | Settings.java |
 | `first_time_login` | String | `0` | Settings.java |
 | `flink_dir` | String | `/srv/hops/flink` | Settings.java |
-| `flink_version` | String | *(empty string)* | Settings.java |
 | `fs_java_job_util` | String | `hdfs:///user/spark/hsfs-utils-2.1.0-SNAPSHOT.jar` | Settings.java |
 | `fs_py_job_util` | String | `hdfs:///user/spark/hsfs_util-2.1.0-SNAPSHOT.py` | Settings.java |
 | `fs_storage_connector_session_duration` | Integer | `3600` | Settings.java |
@@ -41301,6 +42428,7 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `kube_serving_apikey_reaper_interval_minutes` | Integer | `15` | Settings.java |
 | `kube_serving_max_num_instances` | Integer | `-1` | Settings.java |
 | `kube_serving_min_num_instances` | Integer | `-1` | Settings.java |
+| `kube_serving_triton_versions` | String | *(empty string)* | Settings.java |
 | `kube_serving_vllm_omni_versions` | String | *(empty string)* | Settings.java |
 | `kube_serving_vllm_versions` | String | *(empty string)* | Settings.java |
 | `kube_skip_namespace_creation` | Boolean | `false` | Settings.java |
@@ -41311,11 +42439,16 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `kube_user_workload_tolerations` | String | *(empty string)* | Settings.java |
 | `kubernetes_installed` | String | `false` *(duplicate key, also declared in Settings.java; values match)* | CAConf.java |
 | `kubernetes_installed` | Boolean | `false` *(duplicate key, also declared in CAConf.java; values match)* | Settings.java |
+| `kueue_history_retention_days` | Integer | `90` | Settings.java |
 | `kueue_installed` | Boolean | `false` | Settings.java |
 | `kueue_project_default_cluster_queue` | String | *(empty string)* | Settings.java |
 | `kueue_project_default_local_queue` | String | *(empty string)* | Settings.java |
+| `kueue_queue_model` | String | `shared` | Settings.java |
+| `kueue_reconcile_interval_s` | Integer | `300` | Settings.java |
+| `kueue_rollup_retention_days` | Integer | `100` | Settings.java |
 | `kueue_system_jobs_cluster_queue` | String | *(empty string)* | Settings.java |
 | `kueue_system_jobs_local_queue` | String | *(empty string)* | Settings.java |
+| `label_priority_write` | Boolean | `true` | Settings.java |
 | `ldap_account_status` | Integer | `1` | Settings.java |
 | `ldap_attr_binary` | String | `java.naming.ldap.attributes.binary` | Settings.java |
 | `ldap_auth` | Boolean | `false` | Settings.java |
@@ -41342,6 +42475,13 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `lifecycle_webhook_cluster_id` | String | *(empty string)* | Settings.java |
 | `lifecycle_webhook_secret` | String | *(empty string)* | Settings.java |
 | `lifecycle_webhook_url` | String | *(empty string)* | Settings.java |
+| `llm_gateway_deployment_request_limit` | String | *(empty string)* | Settings.java |
+| `llm_gateway_deployment_token_limit` | String | *(empty string)* | Settings.java |
+| `llm_gateway_project_request_limit` | String | *(empty string)* | Settings.java |
+| `llm_gateway_project_token_limit` | String | *(empty string)* | Settings.java |
+| `llm_gateway_user_request_limit` | String | *(empty string)* | Settings.java |
+| `llm_gateway_user_token_limit` | String | *(empty string)* | Settings.java |
+| `loadbalancer_external_domain_semantic_gateway` | String | *(empty string)* | Settings.java |
 | `localhost` | Boolean | `false` | Settings.java |
 | `log_history_limit` | Integer | `30` | Settings.java |
 | `login_page_overwrite` | String | *(empty string)* | Settings.java |
@@ -41361,7 +42501,6 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `max_num_proj_per_user` | Integer | `5` | Settings.java |
 | `max_ongoing_opensearch_doc_write` | Integer | `100` | Settings.java |
 | `max_project_cloned_environments` | Integer | `100` | Settings.java |
-| `max_status_poll_retry` | Integer | `5` | Settings.java |
 | `max_upload_request_bytes` | Long | `67108864` | Settings.java |
 | `mount_hopsfs_in_python_deployments` | Boolean | `true` | Settings.java |
 | `mount_hopsfs_in_python_job` | Boolean | `true` | Settings.java |
@@ -41386,16 +42525,20 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `oauth_redirect_uri` | String | `hopsworks/callback` | Settings.java |
 | `ongoing_backup` | Boolean | `false` | Settings.java |
 | `online_ingestion_max_per_featuregroup` | Integer | `1000` | Settings.java |
+| `onlinefs_deployment_name` | String | `onlinefs-deployment` | Settings.java |
 | `onlinefs_service_thread_number` | Integer | `10` | Settings.java |
+| `onlinefs_service_user_email` | String | `onlinefs@hopsworks.ai` | Settings.java |
 | `opencost_api_url` | String | `https://opencost.opencost.svc.cluster.local:9443` | Settings.java |
 | `opencost_currency` | String | `USD` | Settings.java |
 | `opencost_history_retention_days` | Integer | `400` | Settings.java |
 | `opensearch_default_embedding_index` | String | *(empty string)* | Settings.java |
+| `opensearch_default_max_index_size_mb` | Integer | `-1` | Settings.java |
+| `opensearch_default_max_num_embedding_indices` | Integer | `-1` | Settings.java |
+| `opensearch_default_max_vector_index_size_mb` | Integer | `-1` | Settings.java |
 | `opensearch_index_mapping_limit` | Integer | `1000` | Settings.java |
 | `opensearch_num_default_embedding_index` | Integer | `1` | Settings.java |
 | `openshift` | Boolean | `false` | Settings.java |
 | `payara_admin_password_value` | String | `admin_password` | KubeSettings.java |
-| `payment_type` | String | `NOLIMIT` | Settings.java |
 | `pki_ca_configuration` | String | *(empty string)* | CAConf.java |
 | `platform_intelligence_llm_api_key` | String | *(empty string)* | Settings.java |
 | `platform_intelligence_llm_base_url` | String | *(empty string)* | Settings.java |
@@ -41430,6 +42573,7 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `pythonapp_idle_cooldown_seconds` | Integer | `21600` | Settings.java |
 | `pythonapp_memory` | Integer | `2048` | Settings.java |
 | `pythonapp_proxy_token_ttl_ms` | Long | `900000` | Settings.java |
+| `pythonapp_unready_timeout_seconds` | Integer | `600` | Settings.java |
 | `quotas_featuregroups_online_disabled` | Long | `-1` | Settings.java |
 | `quotas_featuregroups_online_enabled` | Long | `-1` | Settings.java |
 | `quotas_max_parallel_executions` | Long | `-1` | Settings.java |
@@ -41460,7 +42604,20 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `replicated_kubernetes_ops_retention` | String | `P15D` | Settings.java |
 | `requests_verify` | Boolean | `false` | Settings.java |
 | `reserved_project_names` | String | `hopsworks,information_schema,airflow,glassfish_timers,grafana,hops,metastore,mysql,ndbinfo,performance_schema,sqoop,sys,base,python37,python38,python39,python310,filebeat,git,onlinefs,sklearnserver,rondb_replication,default,kube-system,kube-public,kube-node-lease,kube_system,kube_public,kube_node_lease,trino` | Settings.java |
-| `resource_dirs` | String | `".sparkStaging;spark-warehouse;.flinkStaging;.flinkCheckpoints;apps;jobs;" + DLT_WAREHOUSE_DIR.getDefaultValue() + ";" + RAY_WAREHOUSE_DIR.getDefaultValue()` *(computed expression, not a literal)* | Settings.java |
+| `resource_dirs` | String | `".sparkStaging;spark-warehouse;apps;jobs;" + DLT_WAREHOUSE_DIR.getDefaultValue() + ";" + RAY_WAREHOUSE_DIR.getDefaultValue()` *(computed expression, not a literal)* | Settings.java |
+| `rest_api_rate_limit_enabled` | Boolean | `false` | Settings.java |
+| `rest_api_rate_limit_exempt_roles` | String | `AGENT` | Settings.java |
+| `rest_api_rate_limit_fast_probe_ms` | Integer | `50` | Settings.java |
+| `rest_api_rate_limit_max_burst` | Integer | `100` | Settings.java |
+| `rest_api_rate_limit_probe_interval_seconds` | Integer | `5` | Settings.java |
+| `rest_api_rate_limit_probes_to_shared` | Integer | `6` | Settings.java |
+| `rest_api_rate_limit_slow_sync_ms` | Integer | `100` | Settings.java |
+| `rest_api_rate_limit_stale_seconds` | Integer | `3` | Settings.java |
+| `rest_api_rate_limit_steady_state` | Integer | `20` | Settings.java |
+| `rest_api_rate_limit_sync_deadline_ms` | Integer | `250` | Settings.java |
+| `rest_api_rate_limit_user_cache_minutes` | Integer | `10` | Settings.java |
+| `rest_api_rate_limit_user_cache_size` | Integer | `10000` | Settings.java |
+| `rondb_default_max_online_tables` | Integer | `-1` | Settings.java |
 | `rondb_mgmt_connection_timeout` | Integer | `5000` | Settings.java |
 | `rondb_mgmt_max_response_lines` | Integer | `10000` | Settings.java |
 | `rondb_mgmt_read_timeout` | Integer | `10000` | Settings.java |
@@ -41477,6 +42634,15 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `run_ai_reconcile_interval_s` | Integer | `600` | Settings.java |
 | `run_ai_url` | String | `http://runai-backend-traefik.runai-backend.svc.cluster.local:8080` | Settings.java |
 | `saas_entry_point_url` | String | *(empty string)* | Settings.java |
+| `semantic_gateway_cluster_flight_port` | Integer | `18446` | Settings.java |
+| `semantic_gateway_flight_port` | Integer | `18446` | Settings.java |
+| `semantic_layer_builds_retained` | Integer | `20` | Settings.java |
+| `semantic_layer_enabled` | Boolean | `false` | Settings.java |
+| `semantic_layer_gateway_cluster_url` | String | `https://semantic-gateway.hopsworks.svc.cluster.local:18443` | Settings.java |
+| `semantic_layer_gateway_internal_url` | String | *(empty string)* | Settings.java |
+| `semantic_layer_staleness_check_seconds` | Integer | `30` | Settings.java |
+| `semantic_query_cleaner_batch_size` | Integer | `1000` | Settings.java |
+| `semantic_query_strip_details_after_days` | Integer | `7` | Settings.java |
 | `service_discovery_domain` | String | `consul` *(duplicate key, also declared in Settings.java; values match)* | CAConf.java |
 | `service_discovery_domain` | String | `consul` *(duplicate key, also declared in CAConf.java; values match)* | Settings.java |
 | `service_jwt_exp_leeway_sec` | Integer | `43200` | Settings.java |
@@ -41503,9 +42669,13 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `serving_max_route_connections` | Integer | `10` | Settings.java |
 | `serving_monitor_int` | String | `30s` | Settings.java |
 | `serving_redeploy_not_found_after_seconds` | Integer | `120` | Settings.java |
+| `serving_sharing_enabled` | Boolean | `true` | Settings.java |
 | `serving_state_manager_batch_size` | Integer | `1000` | Settings.java |
 | `serving_state_manager_enabled` | Boolean | `true` | Settings.java |
 | `serving_state_manager_interval_ms` | Integer | `600000` | Settings.java |
+| `serving_tracing_max_traces_per_minute` | Integer | `60` | Settings.java |
+| `serving_tracing_online_ttl_hours` | Integer | `36` | Settings.java |
+| `serving_tracing_pause_free_percent` | Integer | `20` | Settings.java |
 | `spark_configmap_name` | String | `spark` | Settings.java |
 | `spark_dir` | String | `/srv/hops/spark` | Settings.java |
 | `spark_executor_min_memory` | Integer | `1024` | Settings.java |
@@ -41518,7 +42688,6 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `spark_launcher_sa_annotations` | String | *(empty string)* | Settings.java |
 | `spark_pod_kill_grace_period_seconds` | Integer | `1200` | Settings.java |
 | `spark_remove_job_when_completed` | Boolean | `true` | Settings.java |
-| `spark_resource_manager` | String | `kubernetes` | Settings.java |
 | `spark_ui_logs_offset` | Integer | `512000` | Settings.java |
 | `spark_user` | String | `spark` | Settings.java |
 | `spark_version` | String | *(empty string)* | Settings.java |
@@ -41526,7 +42695,6 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `staging_dir` | String | `/srv/hops/domains/domain1/staging` | Settings.java |
 | `statistics_cleaner_batch_size` | Integer | `1000` | Settings.java |
 | `statistics_cleaner_interval_ms` | Integer | `900000` | Settings.java |
-| `streamlit_sharing` | Boolean | `false` | Settings.java |
 | `sudoers_dir` | String | `/srv/hops/sbin` *(duplicate key, also declared in Settings.java; values match)* | CAConf.java |
 | `sudoers_dir` | String | `/srv/hops/sbin` *(duplicate key, also declared in CAConf.java; values match)* | Settings.java |
 | `superset_admin_roles` | String | `Admin` | Settings.java |
@@ -41538,6 +42706,7 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `superset_proxy_read_timeout_ms` | Integer | `180000` | Settings.java |
 | `superset_proxy_token_ttl_ms` | Long | `900000` | Settings.java |
 | `superset_secret` | String | `superset-admin-credentials` | KubeSettings.java |
+| `superset_semantic_enabled` | Boolean | `true` | Settings.java |
 | `superset_user_roles` | String | `Gamma,sql_lab` | Settings.java |
 | `tag_history_archive_max_events` | Integer | `20000` | Settings.java |
 | `tag_history_cleaner_batch_size` | Integer | `1000` | Settings.java |
@@ -41545,6 +42714,7 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `tag_history_retention_days` | Integer | `0` | Settings.java |
 | `teleport_cleaner_interval_ms` | Long | `86400000` | Settings.java |
 | `teleport_ttl_days` | Integer | `7` | Settings.java |
+| `tensorflow_inference_enabled` | Boolean | `true` | Settings.java |
 | `tensorflow_version` | String | *(empty string)* | Settings.java |
 | `terminal_gpu_image` | String | `terminal-gpu` | Settings.java |
 | `terminal_image` | String | `terminal-server` | Settings.java |
@@ -41557,11 +42727,12 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `terminal_spark_image` | String | `terminal-spark` | Settings.java |
 | `trino_access_control_base_configmap` | String | `hopsworks-trino-access-control-base` | KubeSettings.java |
 | `trino_catalog_approval_required` | Boolean | `false` | Settings.java |
+| `trino_catalog_management` | String | `static` | Settings.java |
 | `trino_catalog_max_bytes` | Integer | `16384` | Settings.java |
 | `trino_catalog_max_per_project` | Integer | `10` | Settings.java |
 | `trino_catalog_reconcile_enabled` | Boolean | `false` | Settings.java |
 | `trino_catalogs_configmap` | String | `hopsworks-trino-catalogs` | KubeSettings.java |
-| `trino_connectors` | String | `ai,bigquery,blackhole,cassandra,clickhouse,datasketches,delta_lake,druid,duckdb,elasticsearch,exasol,faker,gsheets,hive,hudi,iceberg,ignite,jmx,kafka,lakehouse,loki,mariadb,memory,mongodb,mysql,opensearch,oracle,pinot,postgresql,prometheus,redis,redshift,singlestore,snowflake,sqlserver,tpcds,tpch,trino_thrift` | Settings.java |
+| `trino_connectors` | String | `ai,bigquery,blackhole,cassandra,clickhouse,datasketches,delta_lake,druid,duckdb,elasticsearch,exasol,faker,gsheets,hive,hudi,iceberg,ignite,jmx,kafka,lakehouse,loki,mariadb,memory,mongodb,mysql,opensearch,oracle,pinot,postgresql,prometheus,redis,redshift,singlestore,snowflake,sqlserver,teradata,tpcds,tpch,trino_thrift` | Settings.java |
 | `trino_coordinator_deployment` | String | `hopsworks-trino-coordinator` | KubeSettings.java |
 | `trino_credentials_secret` | String | `trino-admin-credentials` | KubeSettings.java |
 | `trino_default_catalog` | String | `delta` | Settings.java |
@@ -41576,6 +42747,7 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `trino_files_path` | String | `/apps/trino` | Settings.java |
 | `trino_image_tag` | String | *(empty string)* | Settings.java |
 | `trino_max_catalogs` | Integer | `250` | Settings.java |
+| `trino_max_catalogs_ceiling` | Integer | `250` | Settings.java |
 | `trino_mountable_secrets_root` | String | `/opt/hopsworks/mounts` | KubeSettings.java |
 | `trino_reconcile_enabled` | Boolean | `true` | Settings.java |
 | `trino_reconcile_interval_ms` | Long | `300000` | Settings.java |
@@ -41599,7 +42771,6 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `velero_namespace` | String | *(empty string)* | Settings.java |
 | `whitelist_users` | String | `agent@hops.io` | Settings.java |
 | `yarn_app_uid` | Long | `1235` | Settings.java |
-| `yarn_default_quota` | Integer | `60000` | Settings.java |
 | `zookeeper_version` | String | *(empty string)* | Settings.java |
 
 <!-- END GENERATED -->
@@ -46272,13 +47443,13 @@ With the topic ID, OnlineFS reads a topic that was deleted and created again und
   A pod that starts later copies only project tables not listed yet.
 - **The project tables stay until every OnlineFS pod runs 5.3.**
   An OnlineFS pod of 5.2 reads its project's table each time Kafka gives it partitions, as during the rollout.
-  The `onlinefs-drop-legacy-offsets-<hash>-r<revision>` Job waits for the rollout of the OnlineFS Deployment to finish, then drops the listed project tables.
+  The `onlinefs-drop-legacy-offsets-<hash>-r<revision>` Job waits for the rollouts of the RonDB StatefulSets and of the OnlineFS Deployment to finish, then drops the listed project tables.
   On a cluster with `global._hopsworks.full_platform: true` it holds the Flyway lease while it drops them, as the schema migrations do.
 - **The init container and the Job connect to the DDL SQL node of the release as `hopsworksroot`**, as the schema migrations do: the `ddl-mysqld` Service of the release, or, when RonDB is managed externally on a release with `global._hopsworks.full_platform: true`, the consul name in `onlinefs.dependencies.mysql.ddlConsulServiceName` (`mysqlddl`).
   A satellite cluster (`global._hopsworks.full_platform: false`) always connects to the Service, also with an external RonDB.
   A cluster that disables the DDL SQL node (`rondb.rondb.meta.ddlMySQLd.enabled: false`) sets `onlinefs.dependencies.mysql.serviceName: mysqld`, and also `onlinefs.dependencies.mysql.ddlConsulServiceName: mysql` when it is not a satellite and RonDB is managed externally.
   `onlinefs.dependencies.mysql.url` overrides both.
-- **With `onlinefs.rbac.useExistingRole`**, the role needs `get`, `list` and `watch` on `deployments`, and on a cluster with `global._hopsworks.full_platform: true` the lease rules of the chart's `onlinefs-role`, for the Job.
+- **With `onlinefs.rbac.useExistingRole`**, the role needs `get`, `list` and `watch` on `deployments` and `statefulsets`, `get` and `watch` on `statefulsets/status`, and on a cluster with `global._hopsworks.full_platform: true` the lease rules of the chart's `onlinefs-role`, for the Job.
 - **A step that fails keeps the pod from starting.**
   It reads every project table before it writes, so a step that fails while it copies leaves every project table as it is, and the next start copies them again.
   The pod stays in `Init:Error` or `Init:CrashLoopBackOff`, and the log names the database:
@@ -52454,6 +53625,11 @@ Source: https://docs.hopsworks.ai/latest/python-api/hopsworks/core/
       heading_level: 2
       show_root_heading: true
 
+::: hsfs.core.files_ingestion.FilesIngestionJob
+    options:
+      heading_level: 2
+      show_root_heading: true
+
 ::: hsfs.core.multi_table_ingestion.MultiTableIngestionJob
     options:
       heading_level: 2
@@ -54191,6 +55367,11 @@ Source: https://docs.hopsworks.ai/latest/python-api/hsfs/storage_connector/
       heading_level: 2
       show_root_heading: true
 
+::: hsfs.storage_connector.GoogleDriveConnector
+    options:
+      heading_level: 2
+      show_root_heading: true
+
 ::: hsfs.storage_connector.GoogleSheetsConnector
     options:
       heading_level: 2
@@ -54247,6 +55428,11 @@ Source: https://docs.hopsworks.ai/latest/python-api/hsfs/storage_connector/
       show_root_heading: true
 
 ::: hsfs.storage_connector.SapHanaConnector
+    options:
+      heading_level: 2
+      show_root_heading: true
+
+::: hsfs.storage_connector.SftpConnector
     options:
       heading_level: 2
       show_root_heading: true
