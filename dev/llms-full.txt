@@ -5872,6 +5872,32 @@ A run that is killed can leave one behind; the next mirror run removes it.
 The synced files count against the project's storage quota, which an administrator sets per project; the maximum file size limits each file, not the total.
 When the quota is full, the files that do not fit fail, the run is reported as partial with the error `the project's storage quota is full`, and the next run copies them once there is room.
 
+### File and folder names { #data-source-sharepoint-names }
+
+HopsFS stores names in Latin-1, so every folder and file name of a path is stored mapped:
+
+1. In Unicode NFC form, so a name SharePoint keeps decomposed, as files uploaded from macOS often are, is stored with precomposed letters such as `Å`.
+2. Typographic characters as their ASCII forms: dashes and the minus sign as `-`, curly single quotes and the prime as `'`, curly double quotes and the double prime as `"`, Unicode spaces such as the thin space as a space, `…` as `...`, `€` as `EUR` and `™` as `TM`.
+3. Any other character outside Latin-1, such as `ł` or a Chinese character, as `_`.
+
+| Name in SharePoint | Stored as |
+| --- | --- |
+| `Kontroll 2026 – 2029.pdf` | `Kontroll 2026 - 2029.pdf` |
+| `Remiss ”Cykelplan”.pdf` | `Remiss "Cykelplan".pdf` |
+| `Łódź.pdf` | `_ód_.pdf` |
+| `äöå é.pdf` | `äöå é.pdf` |
+
+The audit log and the index's `hopsfs_path` and `file_name` hold the stored names, and `sharepoint_path` the path in SharePoint.
+A name already in NFC form and Latin-1 is stored as it is.
+
+Two names that map to one stored name, such as the folders `F-` and `F–`, or `plan-v1.pdf` and `plan–v1.pdf`, are not synced.
+The run is partial, its error names both, and a copy already stored under that name stays, as does its row in the index.
+Renaming all but one of them in SharePoint lets the next run sync them.
+While such names are left out, a mirror run does not remove the files that the include and exclude patterns or the maximum file size exclude; the first run after the rename does.
+
+A data source created on an earlier version keeps its own copy of the sync script, which fails each file whose name is outside Latin-1 instead.
+Its `Code` tab then shows that the script no longer matches the platform template; `Reset to default` brings in the current one, and every name stored before keeps its path.
+
 ### The audit log
 
 Every run that changes the dataset writes one CSV file:
@@ -5896,9 +5922,6 @@ execution_id,op,kind,path,src_path
 Files that failed to copy are not listed, since they did not change.
 
 rclone skips OneNote notebooks and shortcuts to other libraries; they are counted as skipped and are not copied.
-
-File and folder names are stored in Unicode NFC form, so a name SharePoint keeps decomposed, as files uploaded from macOS often are, is stored with precomposed letters such as `Å`.
-HopsFS stores names in Latin-1, so a name with a character outside it, such as `ł`, `€` or Chinese characters, cannot be copied; the run fails for that file and its error names the file, and renaming it in SharePoint lets the next run copy it.
 
 The `date=` directories are Hive-style partitions, so a filter on `date` reads only the matching days.
 From a Python job, with DuckDB from the `python-feature-pipeline` environment:
@@ -7012,6 +7035,11 @@ A run goes through these steps.
    Any other file is downloaded, several at a time, into a temporary file outside the dataset and renamed into place once complete, so readers of the dataset never see a partial file; it is counted as `copied` when new and `updated` when it replaced an earlier copy.
    When the data source provides a checksum of the file, the download is verified against it before the rename: GCS, Google Drive, S3 objects uploaded in a single part, and ADLS files that have a content MD5 set.
    The copy keeps the path relative to the prefix, so `handbook/2026/a/b.pdf` under prefix `handbook/2026/` lands at `<dataset>/a/b.pdf`.
+   HopsFS stores names in Latin-1, so every name of that path is stored in Unicode NFC form, with typographic dashes, quotes and spaces, `…`, `€` and `™` as their ASCII forms and any other character outside Latin-1 as `_`, as for [SharePoint names][data-source-sharepoint-names].
+   `Kontroll 2026 – 2029.pdf` lands as `Kontroll 2026 - 2029.pdf` and `Łódź.pdf` as `_ód_.pdf`, and the manifest's `source_url` keeps the name in the source.
+   When two listed files map to one path, one is stored and the other is counted as `failed`, with an error naming the file that holds the path.
+   A file an earlier run stored keeps its path for as long as its source is listed, so `plan-v1.pdf` added next to a stored `plan–v1.pdf` fails until one of them is renamed or deleted in the source.
+   A file over the size cap holds the path only when an earlier copy of it is stored there.
 4. **Failures**.
    A file that cannot be downloaded or written, or whose download does not match the checksum of the data source, is counted as `failed`, logged with its error, and the run continues with the next file unless `Fail on first error` is on.
    The previous copy of a failed file, if any, stays in place and in the manifest, and the file is retried on the next run.
@@ -8504,7 +8532,7 @@ Use `Ingest Data to New Feature Group` when you want to:
 This ingestion flow supports multiple data sources:
 
 - SQL-like sources can either create an external feature group or ingest data into a new feature group.
-- The ingestion job reads a table and cannot run a SQL query, so a SQL query can only define an [external feature group][create-external-feature-group].
+- A SQL-like source is ingested from a table or from a SQL query, see [Ingest from a SQL query][ingest-from-a-sql-query].
 - The SQL family currently includes Snowflake, BigQuery, Redshift, generic JDBC (MySQL, PostgreSQL, Oracle, SQL Server), and SAP HANA.
 - A [Hopsworks][data-source-hopsworks] source copies a feature group from another Hopsworks cluster, with full or incremental loads.
 - CRM and REST API sources use the ingestion path only.
@@ -8517,13 +8545,37 @@ This ingestion flow supports multiple data sources:
 Navigate to the data source you want to use and start the feature-group creation flow from the UI.
 
 For SQL-based sources, open the data source, click `Next: Select Tables`, select a database and a table, then choose `Ingest Data to New Feature Group`.
-The `Query` tab does not offer this option, since the ingestion job cannot run a query; select the table in the `Table` tab instead.
+To ingest the result of a query instead of a whole table, use the `Query` tab, see [Ingest from a SQL query][ingest-from-a-sql-query].
 Once the ingest option is selected, the column table gains a `Partition key` column and an `Add a feature` button for features that do not exist in the source; the transformation script computes their values.
 
 <figure markdown>
   ![dltHub SQL Feature Group Selection](../../../assets/images/guides/fs/feature_group/dlthub_select_sql_table.png)
   <figcaption>Select a source table, set the keys and choose Ingest Data to New Feature Group</figcaption>
 </figure>
+
+### Ingest from a SQL query { #ingest-from-a-sql-query }
+
+A SQL-like source can also be ingested from a SQL query, for example to keep only some rows, join two tables or rename columns, without creating a view in the source database.
+This is useful for databases where Hopsworks lists tables only, such as Oracle and SAP HANA.
+
+1. Open the data source, click `Next: Select Tables` and switch to the `Query` tab.
+2. Write the query in the `SQL Query` box and click `Fetch Schema`.
+   Hopsworks runs the query to read its columns and a preview of its rows.
+3. Choose `Ingest Data to New Feature Group` and configure the feature group schema as in [Step 2](#step-2-configure-the-feature-group-schema).
+
+The ingestion job runs the query against the database configured in the data source, the same one `Fetch Schema` used, so qualify tables of other schemas or databases in the query itself.
+A feature group is ingested from either a table or a query, never both.
+The query must be a single `SELECT` or `WITH` statement.
+This check catches mistakes; it does not stop every statement that writes, so give a data source that other members use a database user with read-only privileges.
+Give each result column a unique name, for example with `AS` for the `id` of both sides of a join, since the job refuses a query that returns two columns with the same name rather than guess which is which.
+
+A full load runs the query as written.
+An incremental load, or a full load with a source cursor field, wraps the query in a derived table and filters the cursor field over its result, so:
+
+- The query must return the source cursor field as one of its columns.
+- SQL Server and Teradata reject an `ORDER BY` inside a derived table, and SQL Server rejects a `WITH` clause there; leave them out of a query loaded incrementally or with a source cursor field, since the ingested rows are not ordered anyway.
+
+Each feature group ingested from a query keeps its own progress, so two feature groups can load different queries over the same table independently.
 
 For CRM sources, choose the source resource, click `Fetch Schema` and then configure the feature schema for the new feature group the same way.
 
@@ -8694,6 +8746,7 @@ Compared to `FULL_LOAD`, incremental loading typically:
 - Avoids rebuilding the destination feature group from scratch on every run.
 
 To work reliably, the selected cursor field should be monotonic or consistently ordered for the records you want to ingest.
+For a feature group ingested from a SQL query, the cursor field is a column of the query's result.
 If the source does not provide such a field, `FULL_LOAD` is usually the safer option.
 
 The common incremental field is:
@@ -8763,8 +8816,8 @@ After creation:
 
 You can also configure data source ingestion programmatically with the Hopsworks Python APIs.
 This is done by creating a sink-enabled feature group and passing a sink job configuration, including loading strategy and, for REST sources, endpoint and pagination settings.
-For a SQL source, the data source must name a database and a table, such as one returned by `get_tables()`.
-A data source with a `query` and no table is rejected with error code 270136, because the ingestion job cannot run a query.
+For a SQL source, the data source names either a database and a table, such as one returned by `get_tables()`, or a SQL `query`, never both.
+A data source with both a table and a query is rejected with error code 270136, because it is ambiguous which of them to ingest.
 
 ### Example: create a sink-enabled feature group
 
@@ -8794,6 +8847,46 @@ fg = fs.get_or_create_feature_group(
 fg.save()
 
 # Run the ingestion job
+fg.sink_job.run(await_termination=True)
+```
+
+### Example: ingest the result of a SQL query
+
+```python
+from hopsworks_common.core import sink_job_configuration
+from hsfs.core import data_source as ds
+
+fs = project.get_feature_store()
+parent_data_source = fs.get_data_source("my_sql_source")
+
+query_data_source = ds.DataSource(
+    query="SELECT id, amount, created_at FROM sales.orders WHERE status = 'PAID'",
+    storage_connector=parent_data_source.storage_connector,
+)
+data = query_data_source.get_data(use_cached=False)
+
+loading_config = sink_job_configuration.LoadingConfig(
+    loading_strategy=sink_job_configuration.LoadingStrategy.INCREMENTAL_ID,
+    source_cursor_field="id",
+    initial_value=0,
+)
+
+fg = fs.get_or_create_feature_group(
+    name="paid_orders_fg",
+    version=1,
+    description="Managed feature group populated from a SQL query.",
+    primary_key=["id"],
+    features=data.features,
+    data_source=query_data_source,
+    time_travel_format="DELTA",
+    sink_enabled=True,
+    sink_job_conf=sink_job_configuration.SinkJobConfiguration(
+        name="paid_orders_ingestion",
+        loading_config=loading_config,
+    ),
+)
+fg.save()
+
 fg.sink_job.run(await_termination=True)
 ```
 
@@ -17425,7 +17518,7 @@ Mandatory tags are configured in two scopes.
     <img src="../../../../assets/images/guides/tags/cluster_wide_mandatory_tags.png" alt="Configure cluster-wide mandatory tags under Cluster settings, Tag Schemas">
 
 - Project-specific mandatory tags apply only to a single project.
-  They are configured by an administrator in the `Cluster settings` > `Projects` section, by selecting the project.
+  They are configured by an administrator in the `Cluster settings` > `Projects` section, by clicking the pencil icon of the project and opening its `Governance` tab.
 
     <img src="../../../../assets/images/guides/tags/project_mandatory_tags.png" alt="Configure project-specific mandatory tags under Cluster settings, Projects, by editing a project">
 
@@ -24080,7 +24173,7 @@ In the figure above, in the sub-section `Available in Project` Hopsworks admins 
 
 Hopsworks admins can also override the default project configuration on a per-project basis.
 That is, Hopsworks admins can make certain labels and priority classes available only to certain projects.
-This can be achieved from the `Cluster Settings -> Project -> <ProjectName> -> edit configuration` configuration page:
+This is done in the `Cluster settings` > `Projects` section, by clicking the pencil icon of the project and opening its `Kubernetes` tab:
 
 ![Custom Project Configuration - Node Labels and Priority Classes](../../../assets/images/guides/project/scheduler/admin_project_scheduler.png)
 
@@ -25490,6 +25583,10 @@ Deployments automatically scale the number of replicas between a minimum and a m
 In Standard mode, the default, they are scaled by **KEDA** where the cluster has it, on CPU or memory utilization or on the requests at the gateway (concurrency or requests per second), and a minimum of 0 scales the deployment to zero when idle.
 In Knative mode they are scaled by the **Knative Pod Autoscaler (KPA)** on request traffic.
 
+!!! warning "Knative mode is deprecated"
+    Hopsworks 5.4 removes Knative mode.
+    [Convert existing Knative-mode deployments to Standard mode][knative-mode-deprecated].
+
 For full details on autoscaling parameters, see the [Autoscaling Guide](../../mlops/serving/autoscaling.md).
 
 ## Scheduling
@@ -26162,6 +26259,7 @@ When you browse a data source's databases and tables to create an external featu
 Both are disabled with the reason when the data source cannot be mapped to a Trino connector, and show an **Already added** state when a catalog for this source already exists.
 
 The catalog is created first, so you can review its properties before the feature groups and their ingestion are set up.
+A project catalog created from a data source also lets [semantic models][semantic-define-mounted] read the external feature groups over that data source's tables.
 The **Create Trino Catalog** dialog opens pre-filled with a suggested name, the connector type derived from the data source, and the connector properties derived from its settings.
 You can edit them and add any property the connector supports that the data source does not carry.
 
@@ -26857,8 +26955,8 @@ The names, labels, descriptions and definitions of metrics, dimensions and saved
 
 ## Prerequisites { #semantic-overview-prerequisites }
 
-- An administrator turns the semantic layer on with the Helm value `global._hopsworks.semanticLayer.enabled: true`, which installs the semantic gateway and adds **Semantic Layer** to the project sidebar, see [Semantic Layer administration][semantic-admin].
-  While it is off, the semantic layer endpoints answer 404 `SEMANTIC_LAYER_DISABLED`.
+- The semantic layer is installed: the Helm value `global._hopsworks.semanticLayer.enabled`, `true` by default, installs the semantic gateway and adds **Semantic Layer** to the project sidebar, see [Semantic Layer administration][semantic-admin].
+  While an administrator has it off, the semantic layer endpoints answer 404 `SEMANTIC_LAYER_DISABLED`.
 - Data owners and data scientists of a project create, compile, promote and delete semantic projects, edit their definitions and tags, and query their metrics.
   Observers list and read semantic projects and their definitions; Trino gives an Observer no access to the project's feature groups, so their metric queries fail on Trino.
   Feature store restricted members are refused every semantic layer request with 403 `SEMANTIC_LAYER_FORBIDDEN`, since a semantic project reads every feature of a feature group.
@@ -26957,6 +27055,7 @@ Uncomment the metrics to serve in models/semantic.yml, then run `hops semantic c
 ```
 
 `--from-fg` takes a feature group at its latest version, or `<name>:<version>`, and repeats.
+An external feature group compiles once the project has a Trino catalog of its data source, see [Mounted tables][semantic-define-mounted]; a spine group is refused.
 The files go to `Resources/semantic/<name>`, or to `--path`, which must not exist yet:
 
 ```text
@@ -27351,8 +27450,42 @@ semantic_models:
 
 In the `NATIVE` format, a semantic model names its feature group table with `node_relation`, as `schema_name` and `alias`, such as `sales_featurestore` and `orders_1`.
 
-A semantic model reads a feature group that has an offline table: the project's own, or one shared with the project.
+A semantic model reads a feature group of the project, or one shared with it:
+
+- a cached or stream feature group, through its offline table;
+- an external feature group over a table of a data source, a mounted table, through a Trino catalog of the project created from that data source, see [Mounted tables][semantic-define-mounted].
+
 Any other relation is a `RELATION` error.
+
+### Mounted tables { #semantic-define-mounted }
+
+An external feature group reads a table of a data source, such as a PostgreSQL, Snowflake or MySQL database, where it is.
+A semantic model reads it when the project has a Trino catalog created from that data source:
+
+1. A Data owner creates the catalog from the data source: **Add Trino Catalog** when creating the external feature group, or `create_trino_catalog()` on the data source, see [Trino catalogs][trino-catalogs].
+2. The catalog serves queries once the query engine has loaded it, at its next restart.
+3. The next compile resolves `ref()` to the external feature group, with its features, primary key and event time, as for any other feature group.
+
+The compile reads the table as `<catalog>.<schema>.<table>`, with the data source's schema as `<schema>`.
+On a catalog that names each database a schema, such as MySQL, MariaDB, ClickHouse, Oracle or Teradata, a data source that names no schema uses its database instead.
+On a catalog bound to one database, such as PostgreSQL, SQL Server, Redshift, Snowflake or BigQuery, the data source must name a schema and be in the catalog's database, or the feature group does not resolve.
+Queries run on Trino as the member who asks, like any other query on the catalog.
+
+A catalog counts when it is a project catalog of the project, or one another project [shares][sharing-a-catalog] with it:
+
+- not a private catalog, since a semantic project serves every member of the project and only the owner reads a private catalog, so a data source whose credentials each member provides has no catalog that counts;
+- not a catalog waiting for its first restart, being deleted, or one the query engine refused; a catalog being edited counts, since the query engine keeps the definition it loaded until the restart;
+- a shared catalog only while its share is active, once the query engine's rules grant it.
+
+The project's own catalogs come first, and among several of a kind, the oldest is read.
+Through a share of a whole catalog, schema or table, a semantic model reads every column of the table.
+Through a share narrowed to columns, it reads the shared columns without a mask: a masked column, and a column the table gained after the share was saved, are unknown to the model, so no metric aggregates masked values unnoticed.
+A table the share does not grant, or one whose shared columns are all masked, does not resolve.
+A catalog created from a data source before Hopsworks 5.3 counts when it takes its credentials from the data source.
+An external feature group over a SQL query or a path names no table, and does not resolve.
+
+A mounted table has no commits, so no result that reads it is cached, see [What is never cached][semantic-result-cache-never], and no saved query that reads it is answered from its export.
+In the `NATIVE` format, `node_relation` names a mounted table by its feature store as `schema_name` and its table as `alias`.
 
 ## Event time { #semantic-define-event-time }
 
@@ -29669,7 +29802,7 @@ A query that runs on Trino reads the data and the access of that moment, as with
 ## What is never cached { #semantic-result-cache-never }
 
 - A query over a feature group shared with the project with only some of its features: the shared features can change without a commit, so Hopsworks reports it as not readable for the cache, and every such query runs on Trino.
-- A query over a feature group without commits, such as one without time travel or an external feature group: it has no commit time to key on.
+- A query over a feature group without commits, such as one without time travel or a [mounted table][semantic-define-mounted]: it has no commit time to key on.
 - A result larger than 8 MiB: it streams to the client and is not kept.
 - A query while Hopsworks cannot answer for commits, access or the Trino rules revision: it runs on Trino.
 - The runs of [metric exports][semantic-exports], which always read the data as it is.
@@ -29917,8 +30050,9 @@ The Hopsworks host is `hopsworks.example.com`, and the load balancer of the Flig
 | Both, dbt's layout | `https://<layout host>/api/graphql` and `grpc+tls://<layout host>:443` | dbt's Tableau and Power BI connectors, and tools that take a dbt host, when an administrator turns on the [dbt-compatible endpoint layout][semantic-bi-dbt-layout] |
 
 - The environment id is the semantic project's id, which `hops semantic list` prints under `ID`.
-- The Flight SQL host is the load balancer of the semantic gateway, see [For administrators][semantic-connect-admin].
-  Inside the cluster, it is `semantic-gateway.service.consul` or `semantic-gateway.<namespace>.svc`, on the same port.
+- The Flight SQL host is the one in the connection details: the semantic gateway's load balancer when an administrator set one up, see [For administrators][semantic-connect-admin].
+  Otherwise it is the gateway's Service, `semantic-gateway.<namespace>.svc.cluster.local`, which only clients inside the cluster reach.
+  Inside the cluster, `semantic-gateway.service.consul` and `semantic-gateway.<namespace>.svc` work as well, on the same port.
 - Both APIs take an API key with the `FEATURESTORE` and `TRINO` scopes, as `Authorization: Bearer <api key>`, the form dbt's clients send, or as `Authorization: ApiKey <api key>`.
   The caller must be a member of the semantic project's project.
 - Both APIs use TLS.
@@ -29968,7 +30102,7 @@ Hopsworks hands out what a client needs, apart from the API key.
 It writes the cluster's CA to `/tmp/hopsworks_semantic_<project id>_<semantic project id>_ca.pem`, or to `--ca-path`, and `connection_info(ca_path=...)` does the same.
 `hops semantic connect sales --json` prints every field.
 
-`DBT_SL_ADBC_URL_FORMAT` is a template with `{server_host}` only when the Flight SQL port is on the Hopsworks host, and that host has no port; otherwise it is the full URL of the load balancer.
+`DBT_SL_ADBC_URL_FORMAT` is a template with `{server_host}` only when the Flight SQL port is on the Hopsworks host, and that host has no port; otherwise it is the full URL of the Flight SQL host.
 
 In the UI, open the semantic project and click **Connect a client**, next to **Query metrics**.
 The dialog shows the **Environment ID**, the **GraphQL URL**, the **ADBC URL**, the **JDBC URL**, the `export` lines for dbt-sl-sdk under **dbt-sl-sdk environment**, and the **Cluster CA** with **Download ca.pem**.
@@ -30237,7 +30371,7 @@ Any replica of the gateway serves a handle, so a client can fetch from another r
 
 ## For administrators { #semantic-connect-admin }
 
-The semantic gateway is installed with `global._hopsworks.semanticLayer.enabled: true`.
+The semantic gateway is installed with `global._hopsworks.semanticLayer.enabled`, `true` by default.
 GraphQL needs nothing more: the `hopsworks` chart adds an Ingress for `/semantic-layer/api/graphql` on the ingress hosts.
 Clients outside the cluster reach the Flight SQL port through a load balancer.
 
@@ -30246,8 +30380,6 @@ semantic-gateway:
   externalLoadBalancer:
     enabled: true
     hostname: semantic.hopsworks.example.com
-  signingKey:
-    existingSecret: semantic-gateway-signing-key
 
 hopsworks:
   variables:
@@ -30256,12 +30388,14 @@ hopsworks:
 
 ### The Flight SQL load balancer { #semantic-connect-admin-lb }
 
-- `semantic-gateway.externalLoadBalancer` makes the Service `semantic-gateway-external` on `flightPort`, 18446, as the other external load balancers of the chart do: `enabled`, `class` and `annotations`, `managed: false` for a NodePort Service with an optional `nodePort`, and on AWS a TargetGroupBinding to `global.unmanagedLoadBalancers.semanticGateway.targetGroupId`.
+- `semantic-gateway.externalLoadBalancer.enabled: true` makes the Service `semantic-gateway-external` on `flightPort`, 18446.
+  It is off by default, since REST and GraphQL reach the gateway through the Hopsworks ingress; `null` follows `global._hopsworks.externalLoadBalancers.enabled`.
+  The other settings are those of the chart's other external load balancers: `class` and `annotations`, `managed: false` for a NodePort Service with an optional `nodePort`, and on AWS a TargetGroupBinding to `global.unmanagedLoadBalancers.semanticGateway.targetGroupId`.
 - Clients check the name they dial against the gateway's certificate, so put the load balancer's DNS name, or IP address, in `externalLoadBalancer.hostname`.
   The chart adds it to the gateway's certificate, which otherwise holds only the names inside the cluster.
   Set it at install: the names of the certificate do not change on an upgrade unless the HopsworksCert `semantic-gateway` is deleted first.
 - Set `hopsworks.variables.loadbalancer_external_domain_semantic_gateway` to the same name, so the connection details carry it.
-  Left unset, the `hopsworks-update-lb-domains` job sets it from the load balancer's address, which is not in the certificate.
+  Left unset, the connection details carry the gateway's Service inside the cluster, which clients outside it cannot reach.
 - `hopsworks.variables.semantic_gateway_flight_port`, `"18446"`, is the port the connection details carry; change it with `flightPort`, or when the load balancer listens on another port.
 
 ### The signing key { #semantic-connect-admin-signing-key }
@@ -30269,8 +30403,10 @@ hopsworks:
 The gateway signs query handles with a key from a Secret, under `current`, and also accepts a key under `previous`.
 Each key is at least 32 characters.
 
-- With `signingKey.existingSecret: null` and `global._hopsworks.mode: auto`, the chart creates the Secret `semantic-gateway-signing` with a random key and keeps it across upgrades.
-- In any other mode, such as under ArgoCD, the chart cannot read the Secret back, so the render fails until `existingSecret` names a Secret you create:
+- With `signingKey.existingSecret: null`, a pre-install and pre-upgrade hook Job, `semantic-gateway-signing-init`, creates the Secret `semantic-gateway-signing` with a random key when it holds none, and leaves a key that exists alone.
+  This works under ArgoCD too.
+  Uninstalling Hopsworks deletes the Secret, with `hopsworks.cleanupOnUninstall.enabled`, `true` by default.
+- To manage the key yourself, create a Secret and name it in `existingSecret`; the hook Job then does not run:
 
 ```bash
 kubectl -n hopsworks create secret generic semantic-gateway-signing-key \
@@ -33281,6 +33417,10 @@ Configure autoscaling for your model deployment, including scale metrics and sca
 How a deployment scales depends on whether it runs in KServe Standard mode, scaled by KEDA where the cluster has it, or Knative mode, see [Deployment mode](autoscaling.md#deployment-mode).
 A minimum of 0 instances scales a deployment to zero when idle in either mode, see [Scale to zero when idle](autoscaling.md#scale-to-zero-when-idle).
 
+!!! warning "Knative mode is deprecated"
+    Hopsworks 5.4 removes Knative mode.
+    [Convert existing Knative-mode deployments to Standard mode][knative-mode-deprecated].
+
 ### Scheduling
 
 !!! info "Kueue is required"
@@ -34753,6 +34893,10 @@ Each model server has specific requirements and supports different types of mode
 All deployments use [KServe](https://kserve.github.io/website/latest/) as the serving platform, providing autoscaling, fine-grained resource allocation, inference logging, inference batching, and transformers.
 KServe runs a deployment in either Knative or Standard mode, see [Deployment mode](autoscaling.md#deployment-mode).
 
+!!! warning "Knative mode is deprecated"
+    Hopsworks 5.4 removes Knative mode.
+    [Convert existing Knative-mode deployments to Standard mode][knative-mode-deprecated].
+
 ## Predictor script
 
 For **Python model deployments** ==only==, you can provide a custom Python script, called a predictor script, to load your model and serve predictions. This script is included in the [artifact files](../serving/deployment.md#artifact-files) of the deployment. The script must follow a specific template, as shown in [Step 2](#step-21-optional-implement-a-predictor-script).
@@ -34773,6 +34917,9 @@ tool_call_parser: qwen3_coder
 When Hopsworks generates the file, from a Hugging Face import or the configuration generator, it adds both keys for the model families it knows and keeps any value the file already sets.
 For an existing file or another model family, set them yourself; [Coding agents][coding-agents-deployment] lists the parser of each family.
 
+For vLLM deployments created in Hopsworks 5.3 or later, Hopsworks sets `--tensor-parallel-size` to the current GPU count when the deployment requests more than one GPU, unless the configuration file sets `tensor-parallel-size`, `pipeline-parallel-size` or `data-parallel-size`.
+Deployments created before the upgrade keep their previous parallelism settings across restarts, edits and version rollbacks.
+vLLM-Omni deployments place their stages on GPUs through their own deploy configuration and get no tensor parallel size from Hopsworks.
 vLLM pods get a memory-backed `/dev/shm`, which the model server uses to pass data between processes, for example with tensor parallelism.
 It counts against the pod's memory limit, and the predictor's `shmSize` setting does not size it, so leave room for it in the memory resources.
 
@@ -35940,6 +36087,11 @@ For each component, you can set minimum (requests) and maximum (limits) resource
     A component that uses more than its limit is evicted and restarted; with no limit, it shares the node's free disk with the other pods on the node.
     A cluster can instead give vLLM deployments a fixed-size volume for their model files; their predictor then takes no disk setting, and the form shows the volume's size.
 
+!!! note "HopsFS mount"
+    With a [loading strategy][loading-strategy-guide] that mounts HopsFS, every predictor and transformer instance runs its own HopsFS mount container.
+    Per component you can set its memory (limit in MB, 512 to 1048576), cores (CPU request, 0.001 to 64) and namenode connections (1 to 32); an empty setting uses the cluster default, 0.5 cores for a model mount (`kube_scheduling_model_hopsfsmount_cpu_requests` in the [cluster configuration][cluster-configuration]).
+    The mount's memory and cores count towards the project's resource quota.
+
 !!! tip "Automatic downscale of inactive instances"
     Setting the number of instances to **0** for a component enables **scale-to-zero**: its instances scale down to zero after a period without requests and the next request wakes it.
     In ==Knative== mode this applies to the predictor and the transformer, once the stable window (60 seconds by default) has seen no traffic.
@@ -35976,9 +36128,10 @@ To navigate to the advanced creation form, click on `Advanced options`.
 
 ### Step 3: Configure resources
 
-In the `Resource allocation` section of the form, you can optionally set the resources to be allocated to the predictor and/or the transformer (if available).
+In the `Resources per Instance` card of the form, you can optionally set the resources to be allocated to the predictor and/or the transformer (if available).
 Moreover, you can choose the minimum number of replicas for each of these components.
 `Disk (GB)` limits a component's local disk; leave it empty for no limit.
+When the selected loading strategy mounts HopsFS, each component also shows `Mount memory (MB)`, `Mount cores` and `Namenode connections` for its HopsFS mount, prefilled with the cluster defaults.
 
 !!! note "Scale-to-zero capabilities"
     Set the number of instances to **0** to enable scale-to-zero on the component.
@@ -36024,11 +36177,17 @@ Once you are done with the changes, click on `Create new deployment` at the bott
   maximum_res = Resources(cores=2, memory=256, gpus=1)
 
   predictor_res = PredictorResources(
-      num_instances=1, requests=minimum_res, limits=maximum_res
+      num_instances=1,
+      requests=minimum_res,
+      limits=maximum_res,
+      # optional: the HopsFS mount of each predictor instance
+      hopsfs_mount={"cores": 0.5, "memory": 1024},
   )
   ```
 
 To limit a component's local disk, set `disk` in GB on its limits only, for example `Resources(cores=2, memory=256, gpus=1, disk=50)` or `"disk": 50` in a limits dict; the request is set to the same amount.
+To size a component's HopsFS mount, set `hopsfs_mount` on its resources to a dict with any of the keys `cores`, `memory` (MB) and `namenode_connections`.
+Leaving it out keeps a deployment's settings, and an empty dict resets them to the cluster defaults.
 
 ### Step 3 (Optional): Define the transformer resource configuration
 
@@ -36041,7 +36200,11 @@ To limit a component's local disk, set `disk` in GB on its limits only, for exam
   maximum_res = Resources(cores=2, memory=256, gpus=1)
 
   transformer_res = TransformerResources(
-      num_instances=2, requests=minimum_res, limits=maximum_res
+      num_instances=2,
+      requests=minimum_res,
+      limits=maximum_res,
+      # optional: the HopsFS mount of each transformer instance
+      hopsfs_mount={"memory": 1024, "namenode_connections": 2},
   )
   ```
 
@@ -36127,11 +36290,9 @@ To navigate to the advanced creation form, click on `Advanced options`.
 ### Step 3: Configure autoscaling
 
 In the `Autoscaling` section of the advanced form, you can configure the scaling parameters for the predictor and/or the transformer (if available).
-The `Knative` checkbox at the top of the section selects the [deployment mode](#deployment-mode) and decides which of the fields below are shown.
-It starts unchecked, so a new deployment runs in Standard mode unless you check it.
-The checkbox is disabled while the deployment is running, because the mode of a running deployment cannot be changed.
+The fields depend on the [deployment mode](#deployment-mode), and a new deployment runs in Standard mode.
 
-With the checkbox cleared, the deployment runs in Standard mode and the form shows the fields of the autoscaler the cluster provides.
+The form shows the fields of the autoscaler the cluster provides.
 Its tooltip names the one in effect: KEDA where the cluster has it, KServe's own Horizontal Pod Autoscaler (HPA) otherwise.
 
 - The minimum and maximum instances.
@@ -36145,7 +36306,14 @@ Its tooltip names the one in effect: KEDA where the cluster has it, KServe's own
 - With a minimum of 0, the idle cooldown and the cold-start timeout.
   A vLLM deployment shows a warning, because the model reloads on every wake.
 
-With the checkbox checked, the deployment runs in Knative mode and you can set the scale metric (concurrent requests or requests per second), the target value, the minimum and maximum instances, and the panic and stable window parameters.
+<p align="center">
+  <figure>
+    <img src="../../../../assets/images/guides/mlops/serving/deployment_adv_form_scaling_standard.png" alt="Autoscaling configuration for the predictor and transformer components in Standard mode">
+    <figcaption>Autoscaling configuration for the predictor and transformer in Standard mode</figcaption>
+  </figure>
+</p>
+
+The edit form of an existing Knative-mode deployment shows the Knative fields instead: the scale metric (concurrent requests or requests per second), the target value, the minimum and maximum instances, and the panic and stable windows.
 
 <p align="center">
   <figure>
@@ -36154,12 +36322,9 @@ With the checkbox checked, the deployment runs in Knative mode and you can set t
   </figure>
 </p>
 
-<p align="center">
-  <figure>
-    <img src="../../../../assets/images/guides/mlops/serving/deployment_adv_form_scaling_standard.png" alt="Autoscaling configuration for the predictor and transformer components in Standard mode">
-    <figcaption>Autoscaling configuration for the predictor and transformer in Standard mode</figcaption>
-  </figure>
-</p>
+!!! warning "Knative mode is deprecated"
+    Hopsworks 5.4 removes Knative mode, so it can no longer be selected for a new deployment.
+    [Convert existing Knative-mode deployments to Standard mode][knative-mode-deprecated].
 
 Once you are done with the changes, click on `Create new deployment` at the bottom of the page to create the deployment for your model.
 
@@ -36190,9 +36355,9 @@ Once you are done with the changes, click on `Create new deployment` at the bott
 
 You can use the [`PredictorScalingConfig`][hsml.scaling_config.PredictorScalingConfig] class to configure the scaling options according to your preferences.
 Default values for scaling metrics and parameters are listed in the [Scale metrics](#scale-metrics) and [Scaling parameters](#scaling-parameters) sections below.
-Make sure the metric and parameters you set are valid for the [deployment mode](#deployment-mode) you deploy in.
+Make sure the metric and parameters you set are valid for the [autoscaler](#standard-mode-autoscaler) of the cluster.
 
-=== "Standard mode (KEDA)"
+=== "Request metrics"
 
     ```python
     from hsml.scaling_config import PredictorScalingConfig, ScaleMetric
@@ -36211,7 +36376,7 @@ Make sure the metric and parameters you set are valid for the [deployment mode](
     )
     ```
 
-=== "Standard mode (vLLM engine metrics)"
+=== "vLLM engine metrics"
 
     ```python
     from hsml.scaling_config import PredictorScalingConfig, ScaleMetric
@@ -36228,7 +36393,7 @@ Make sure the metric and parameters you set are valid for the [deployment mode](
     )
     ```
 
-=== "Standard mode (CPU)"
+=== "CPU"
 
     ```python
     from hsml.scaling_config import PredictorScalingConfig
@@ -36239,24 +36404,13 @@ Make sure the metric and parameters you set are valid for the [deployment mode](
     )
     ```
 
-=== "Knative mode"
-
-    ```python
-    from hsml.scaling_config import PredictorScalingConfig
-
-
-    predictor_scaling = PredictorScalingConfig(
-        min_instances=1, max_instances=5, scale_metric="RPS", target=100
-    )
-    ```
-
 ### Step 3 (Optional): Define the transformer scaling configuration
 
 If a transformer script is also provided, you can use the [`TransformerScalingConfig`][hsml.scaling_config.TransformerScalingConfig] class to configure the scaling options according to your preferences.
 Default values for scaling metrics and parameters are listed in the [Scale metrics](#scale-metrics) and [Scaling parameters](#scaling-parameters) sections below.
-In Standard mode a transformer scales on CPU or memory and keeps at least one instance; the request metrics and scale to zero are for a predictor without a transformer.
+A transformer scales on CPU or memory and keeps at least one instance; the request metrics and scale to zero are for a predictor without a transformer.
 
-=== "Standard mode"
+=== "Python"
 
     ```python
     from hsml.scaling_config import TransformerScalingConfig
@@ -36267,20 +36421,9 @@ In Standard mode a transformer scales on CPU or memory and keeps at least one in
     )
     ```
 
-=== "Knative mode"
-
-    ```python
-    from hsml.scaling_config import TransformerScalingConfig
-
-
-    transformer_scaling = TransformerScalingConfig(
-        min_instances=1, max_instances=3, scale_metric="CONCURRENCY", target=50
-    )
-    ```
-
 ### Step 4: Create a deployment with the scaling configuration
 
-=== "Standard mode"
+=== "Python"
 
     ```python
     my_model = mr.get_model("my_model", version=1)
@@ -36297,30 +36440,6 @@ In Standard mode a transformer scales on CPU or memory and keeps at least one in
         transformer=my_transformer,
     )
     ```
-
-=== "Knative mode"
-
-    ```python
-    my_model = mr.get_model("my_model", version=1)
-
-    # optional
-    my_transformer = ms.create_transformer(
-        script_file="Resources/my_transformer.py",
-        scaling_configuration=transformer_scaling,
-    )
-
-    my_deployment = my_model.deploy(
-        scaling_configuration=predictor_scaling,
-        knative_mode=True,
-        # optional:
-        transformer=my_transformer,
-    )
-    ```
-
-!!! note "Match the scaling configuration to the mode"
-    The `knative_mode` argument selects the [deployment mode](#deployment-mode) of the deployment.
-    Leaving it unset deploys in Standard mode for every model server, so a Knative scaling configuration needs `knative_mode=True` passed explicitly.
-    A scaling configuration that uses fields the chosen mode does not support is rejected, so set both together.
 
 !!! tip "Read the configuration back"
     The backend fills in the defaults and settles the configuration on every start and save.
@@ -36340,21 +36459,70 @@ In Standard mode a transformer scales on CPU or memory and keeps at least one in
 Every deployment runs on KServe in one of two modes.
 In ==Standard== mode, the deployment is backed by a plain Kubernetes Deployment and an autoscaler the cluster provides: KEDA where it is installed, KServe's own HPA otherwise.
 In ==Knative== mode, the deployment is backed by a Knative service that scales on request traffic.
-Inference requests reach both modes through the same Istio endpoint, so the mode does not change how you send predictions to a deployment.
+Both modes are reached through the same endpoint, so the mode does not change how you send predictions to a deployment.
 
-!!! info "Standard and Knative mode"
+| Mode | Backed by | Autoscaler | Scale to zero |
+| ---- | --------- | ---------- | ------------- |
+| Standard | Kubernetes Deployment | [KEDA](https://keda.sh/docs/latest/concepts/) where the cluster has it (the default), else [Kubernetes HPA](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/) | With KEDA, for a predictor without a transformer |
+| Knative | Knative service | [Knative Pod Autoscaler (KPA)](https://knative.dev/docs/serving/autoscaling/) | Yes |
 
-    | Mode     | Backed by             | Autoscaler                                                                                                                                                                            | Scale-to-zero                                                                        |
-    | -------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-    | Standard | Kubernetes Deployment | [KEDA](https://keda.sh/docs/latest/concepts/) where the cluster has it (the default), else [Kubernetes HPA](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/) | With KEDA, for a predictor without a transformer, through the KEDA HTTP add-on        |
-    | Knative  | Knative service       | [Knative Pod Autoscaler (KPA)](https://knative.dev/docs/serving/autoscaling/)                                                                                                           | Yes                                                                                  |
+!!! warning "Knative mode is deprecated"
+    Hopsworks 5.4 removes Knative mode, so new deployments run in Standard mode.
+    Existing Knative-mode deployments keep working until you [convert them][knative-mode-deprecated].
 
-A new deployment runs in Standard mode for every model server; Knative mode is the opt-in.
 An update that leaves the mode unset keeps the stored one.
 
-The two modes are backed by different Kubernetes resources, so the mode of a deployment cannot be changed while it is running.
-Stop the deployment, change the mode, and start it again.
-Switching the mode clears the scaling settings that do not carry over and re-derives the defaults of the new mode.
+### Convert a deployment to Standard mode { #knative-mode-deprecated }
+
+Converting a Knative-mode deployment restarts it once if it is running, and leaves it stopped if it is stopped.
+It needs a role that can edit, start and stop the deployment, such as Data Owner.
+
+=== "UI"
+
+    Open the deployment's overview and click **Convert to Standard mode** in the deprecation banner.
+
+=== "Python"
+
+    The mode can only change while the deployment is stopped.
+
+    ```python
+    import hopsworks
+
+
+    project = hopsworks.login()
+    ms = project.get_model_serving()
+
+    my_deployment = ms.get_deployment("my_deployment")
+    was_running = my_deployment.is_running()
+    if was_running:
+        my_deployment.stop()
+    my_deployment.knative_mode = False
+    my_deployment.save()
+    if was_running:
+        my_deployment.start()
+    ```
+
+After the conversion:
+
+- The Knative-only scaling settings are replaced by the Standard-mode defaults, so check the [scaling configuration](#scaling-parameters).
+- A minimum of 0 instances keeps the deployment [scaling to zero when idle](#scale-to-zero-when-idle) where Standard mode supports it, and becomes 1 otherwise.
+- You can still [roll back][deployment-versions] to a version saved in Knative mode; it runs in Standard mode.
+
+!!! info "Creating a Knative-mode deployment fails"
+    From the Python SDK or the REST API, creating a deployment in Knative mode, or switching a deployment to Knative mode, fails with error `240082`.
+    Your administrator can still allow it until 5.4.
+
+!!! api "API reference"
+
+    - <code class="doc-symbol doc-symbol-method"></code> [`ModelServing.get_deployment`][hsml.model_serving.ModelServing.get_deployment]
+    - <code class="doc-symbol doc-symbol-class"></code> [`Deployment`][hsml.deployment.Deployment]
+        - <code class="doc-symbol doc-symbol-method"></code> [`is_running`][hsml.deployment.Deployment.is_running]
+        - <code class="doc-symbol doc-symbol-method"></code> [`stop`][hsml.deployment.Deployment.stop]
+        - <code class="doc-symbol doc-symbol-attribute"></code> [`knative_mode`][hsml.deployment.Deployment.knative_mode]
+        - <code class="doc-symbol doc-symbol-method"></code> [`save`][hsml.deployment.Deployment.save]
+        - <code class="doc-symbol doc-symbol-method"></code> [`start`][hsml.deployment.Deployment.start]
+
+    <a class="hops-api-cta" href="../../../../python-api/hopsworks/">Browse the full Python API :material-arrow-right:</a>
 
 ### Standard-mode autoscaler
 
@@ -36429,7 +36597,7 @@ The cluster defaults of the stabilization windows are set by the administrator i
 
 ### Knative parameters
 
-These apply to a deployment in Knative mode and are rejected in Standard mode.
+These apply to existing Knative-mode deployments and are rejected in Standard mode.
 See [scale bounds](https://knative.dev/docs/serving/autoscaling/scale-bounds/), [autoscaling concepts](https://knative.dev/docs/serving/autoscaling/autoscaling-concepts/) and [scale-to-zero](https://knative.dev/docs/serving/autoscaling/scale-to-zero/) in the Knative documentation for more details.
 
 | Parameter                     | Default | Range  | Description                                 |
@@ -36740,6 +36908,122 @@ Once you are done with the changes, click on `Create new deployment` at the bott
     <a class="hops-api-cta" href="../../../../python-api/hopsworks/">Browse the full Python API :material-arrow-right:</a>
 
 ================================================================================
+# Loading Strategy
+Source: https://docs.hopsworks.ai/latest/user_guides/mlops/serving/loading-strategy/
+
+# How to Select the Loading Strategy of a Deployment { #loading-strategy-guide }
+
+## Introduction
+
+The loading strategy decides how a deployment's pods get the model files and the deployment's own files, such as the predictor script.
+Every strategy puts them at the same paths, `/mnt/models` and `/mnt/artifacts`, so scripts work unchanged.
+
+| Strategy         | In the UI              | How the pods get the files                                                                                        | Model servers               |
+| ---------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| `RUNAI_STREAMER` | Stream to GPU          | Mounted from HopsFS; vLLM streams the weights to the GPUs with the [Run:ai Model Streamer][runai-model-streamer]. | vLLM on GPUs, not vLLM-Omni |
+| `DOWNLOAD`       | Download to local disk | Copied to the pod's local disk before the model server starts.                                                    | All                         |
+| `MOUNT`          | Stream from HopsFS     | Mounted read-only from HopsFS and read in place.                                                                  | All                         |
+
+The two mount strategies need the [HopsFS CSI driver][hopsfs-csi-driver].
+Without it, `DOWNLOAD` is the only strategy, and a deployment that mounts fails to start until it is switched to `DOWNLOAD`.
+
+A new deployment without a strategy gets `RUNAI_STREAMER` when it runs vLLM, not vLLM-Omni, on GPUs, the driver is enabled and the model has safetensors files at the top of its files.
+Every other deployment gets `DOWNLOAD`, as do the deployments that existed before loading strategies.
+Saving a deployment without a strategy keeps the one it has, and saving a new one on a running deployment replaces its pods right away.
+
+If an update removes all GPUs or selects a model without top-level safetensors files, a deployment using `RUNAI_STREAMER` must switch strategies.
+The Python SDK gained the `loading_strategy` setting in 5.3, so if you use an older SDK, make the change in the web UI or upgrade to SDK 5.3 or later and save the update with `DOWNLOAD` or `MOUNT`.
+
+### Which strategy to choose
+
+- **`RUNAI_STREAMER`** loads vLLM models fastest, especially on several GPUs: each GPU reads a share of the files and passes it to the others, so the model is read from HopsFS once.
+  It needs safetensors weights and vLLM's GPU image; the official `vllm/vllm-openai` images include the streamer, and a custom image needs `vllm[runai]`.
+- **`DOWNLOAD`** is usually faster than `MOUNT`: the copy reads the files at full speed, and the model server then loads them from local disk.
+  It needs local disk at least as large as the model.
+- **`MOUNT`** needs no copy and no local disk, but usually starts a deployment more slowly than `DOWNLOAD`.
+  For plain vLLM, Hopsworks adds `--safetensors-load-strategy eager` by default because vLLM's lazy loading reads a mount more slowly.
+  Hopsworks skips this flag for vLLM-Omni, and when the vLLM configuration file sets `safetensors-load-strategy`, enables `enable_multithread_load` in `model-loader-extra-config`, or cannot be read.
+  With eager loading, each file being loaded is held in host memory and counts against the deployment's memory limit, so a CPU-only deployment needs room for its largest weight file in addition to the model.
+
+Each pod that mounts runs its own HopsFS mount container, which the [Resources Guide](resources.md) shows how to size.
+
+!!! warning "A mounted deployment needs its HopsFS mount for as long as it runs"
+    A model server reads files it has not loaded yet from the mount, so it fails when the mount does.
+    The [failure modes][hopsfs-csi-failure-modes] of the driver describe how to recover.
+
+### Run:ai Model Streamer settings { #run-ai-model-streamer-settings }
+
+With `RUNAI_STREAMER`, Hopsworks starts vLLM with the defaults below, and the deployment's configuration file or environment variables override each of them.
+
+- **`--load-format runai_streamer`** loads the weights with the streamer.
+  A `load-format` in the configuration file, or an option only vLLM's default loader takes such as `enable_multithread_load`, keeps vLLM's own loader instead; choose `DOWNLOAD` or `MOUNT` then, since that loader reads a mount slowly.
+- **`--model-loader-extra-config '{"distributed": true}'`**, with more than one GPU, streams the model once for all GPUs.
+  A `model-loader-extra-config` in the configuration file replaces it, so add `distributed: true` to it to keep this.
+- **`RUNAI_STREAMER_MEMORY_LIMIT=0`** stages one tensor at a time in host memory.
+  A larger limit in bytes lets the streamer read ahead, and counts against the deployment's memory limit.
+
+## Web UI
+
+### Step 1: Create a new deployment
+
+Navigate to `Model Deployments` in the menu on the left and click on `New model deployment`.
+
+### Step 2: Select the loading strategy
+
+Choose the strategy in the `Model loading` field of the `Deployment configuration` card.
+The field offers only the strategies the deployment can use, with its default selected.
+Click on `Create new model deployment` to create the deployment.
+
+## Code
+
+### Step 1: Connect to Hopsworks
+
+=== "Python"
+
+  ```python
+  import hopsworks
+
+
+  project = hopsworks.login()
+
+  # get Hopsworks Model Registry handle
+  mr = project.get_model_registry()
+
+  # get Hopsworks Model Serving handle
+  ms = project.get_model_serving()
+  ```
+
+### Step 2: Create a deployment with a specific loading strategy
+
+=== "Python"
+
+  ```python
+  my_model = mr.get_model("my_model", version=1)
+
+  my_predictor = ms.create_predictor(
+      my_model,
+      loading_strategy="MOUNT",  # or "RUNAI_STREAMER" for vLLM, or "DOWNLOAD"
+  )
+  my_deployment = my_predictor.deploy()
+
+  # change it on an existing deployment: a running one rolls out new pods right away
+  my_deployment.loading_strategy = "DOWNLOAD"
+  my_deployment.save()
+  ```
+
+!!! api "API reference"
+
+    - <code class="doc-symbol doc-symbol-method"></code> [`ModelServing.create_predictor`][hsml.model_serving.ModelServing.create_predictor]
+    - <code class="doc-symbol doc-symbol-method"></code> [`Predictor.deploy`][hsml.predictor.Predictor.deploy]
+    - <code class="doc-symbol doc-symbol-class"></code> [`Deployment`][hsml.deployment.Deployment]
+        - <code class="doc-symbol doc-symbol-attribute"></code> [`loading_strategy`][hsml.deployment.Deployment.loading_strategy]
+        - <code class="doc-symbol doc-symbol-method"></code> [`save`][hsml.deployment.Deployment.save]
+
+    <a class="hops-api-cta" href="../../../../python-api/hopsworks/">Browse the full Python API :material-arrow-right:</a>
+
+[runai-model-streamer]: https://github.com/run-ai/runai-model-streamer
+
+================================================================================
 # REST API
 Source: https://docs.hopsworks.ai/latest/user_guides/mlops/serving/rest-api/
 
@@ -36903,7 +37187,7 @@ Requests go to `<base URL>/v1/messages`, and Claude Code takes the base URL as `
 
 !!! info "Deployments the LLM Gateway does not serve"
 
-    - A deployment in Knative mode.
+    - A deployment in Knative mode, until it is [converted to Standard mode][knative-mode-deprecated].
     - A deployment that scales to zero when idle (a minimum of 0 instances), or that autoscales on concurrency or requests per second.
     - Every deployment of a project with a started deployment named `v1`.
 
@@ -38316,6 +38600,7 @@ This section serves to provide guides and examples for the common usage of agent
 
 - [Agent Tasks][how-to-run-an-agent-task]: Fire-and-forget agent executions that run as first-class Hopsworks jobs.
 - [Agent Deployments][how-to-run-an-agent-deployment]: Served conversational agents, the chat contract they answer by, and how to deploy, trace and talk to them.
+- [A2A][a2a-on-hopsworks]: How another agent talks to a deployment over the Agent2Agent protocol: the Agent Card, tasks and artifacts, questions for a person, and calling one from Python.
 - [Agent Memory][agent-memory]: The four memory tiers a deployment provides, how to configure them, and what a person can see and erase.
 - [Feedback][feedback-on-what-an-agent-answered]: Verdicts on what an agent answered, from reviewers and from end users, and what reads them.
 - [Evaluation][evaluating-an-agent]: Suites of tasks graded by checks, the runs that execute them, and the gate a release reads.
@@ -38714,6 +38999,81 @@ A framework name Hopsworks does not know is recorded as `custom`, and a package 
 On a redeploy that passes neither, the framework follows the code when it names one and is otherwise kept, and the chat contract is kept.
 So a framework changed in the UI is replaced on the next such redeploy when the code names a different one: to change the framework, change it in the code or pass `framework=`.
 `hops agent info` shows both.
+
+### Use Hopsworks skills in an agent
+
+Choose from the playbooks packaged with the deployment’s installed `hopsworks` library.
+`AgentApp` makes all packaged skills available by default, whatever the agent's framework.
+Choose a subset with `platform_skills=["hops-data-discovery", "hops-analytics"]`, or turn them off with `platform_skills="none"`.
+For example, an agent with its own SQL tool can omit `hops-trino-sql`.
+You can also set `HOPSWORKS_AGENT_SKILLS` in the agent's environment to `all`, `none`, or comma-separated skill names.
+The environment setting accepts spaces and trailing commas, and a blank value selects all skills, the default.
+An explicit selection in `platform_skills` takes precedence.
+If the default selection cannot be prepared, the agent logs a warning and starts without the packaged skills.
+An unknown skill name in the argument or environment stops startup and the error lists the valid names.
+An explicit selection also reports a startup error if its files cannot be prepared.
+The separate `AgentApp(skills=...)` argument describes capabilities advertised in the A2A Agent Card.
+
+Use `claude-agent-sdk` 0.1.62 or later with the app’s `claude_options()` helper.
+Open a client inside the handler so each request gets its own Claude session.
+
+```python
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, ResultMessage
+from hopsworks_agents.protocol import AgentApp
+
+
+agent_app = AgentApp(framework="claude_agents", platform_skills=["hops-data-discovery"])
+options = ClaudeAgentOptions(
+    **agent_app.platform_skills.claude_options(),
+    allowed_tools=["Bash(hops *)"],
+)
+
+
+@agent_app.chat
+async def chat(request):
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query(request.text)
+        async for message in client.receive_response():
+            if (
+                isinstance(message, ResultMessage)
+                and not message.is_error
+                and message.result
+            ):
+                return message.result
+    raise RuntimeError("Claude finished without an answer.")
+```
+
+The helper sets `setting_sources=["project"]`, supplies the additional skill directory through `add_dirs`, and passes `skills="all"` to enable the SDK’s Skill tool for discovered skills.
+Only the selected packaged skills are registered with Claude.
+Their supporting files and linked playbooks are readable in the additional directory.
+The staged entries retain their names and descriptions and grant no tool permissions of their own.
+Skill selection controls which packaged instructions Claude discovers.
+The example’s Bash rule authorizes `hops` commands under the deployment’s API key.
+Narrow that rule to the commands your agent should run.
+Project-owned skills, including copies installed by `hops skills install --agent claude`, keep their own tool settings and remain discoverable even with `platform_skills="none"`.
+
+LangGraph, LlamaIndex, OpenAI Agents and custom agents get the same selection, controlled by the same `platform_skills` argument.
+These frameworks have no loader for skill folders, so the agent wires them in itself.
+Append `agent_app.platform_skills.catalogue()` to the system prompt and register `agent_app.platform_skills.read_skill` as a tool.
+Call `read_skill(name)` for the instructions or supply a text file path relative to the named skill, such as `read_skill("hops-analytics", "references/silver-tasks.md")`.
+The reader accepts files inside that skill and other packaged playbooks its Markdown links to.
+Register the operations your agent supports with the framework too.
+For example, a discovery agent can expose a tool that runs `subprocess.run(["hops", "fg", "list"], capture_output=True, text=True, check=True, timeout=30).stdout`.
+
+An entrypoint with its own web server can use `DeploymentSkills` directly from `hopsworks_agents.protocol.skills`.
+Construct it once per worker after any server fork, for example `skills = DeploymentSkills(framework="claude_agents")`, and keep that object alive as long as its clients use the temporary skill directory.
+
+Inside the serving pod, `hops` detects `REST_ENDPOINT` and `SECRETS_DIR` and logs in through the internal SDK client.
+The client reads a mounted `token.jwt` when present and otherwise reads `api.key` from the same directory.
+Agent deployments mount their own API key at `/keys/api.key` and supply the project identity and certificate material.
+Run `hops job list` in the agent container to check authenticated access without entering a personal key or running `hops setup`.
+
+!!! api "API reference"
+
+    - <code class="doc-symbol doc-symbol-method"></code> [`ModelServing.deploy_agent`][hsml.model_serving.ModelServing.deploy_agent]
+    - <code class="doc-symbol doc-symbol-docs"></code> [Claude Agent SDK for Python](https://github.com/anthropics/claude-agent-sdk-python)
+
+    <a class="hops-api-cta" href="../../../python-api/hopsworks/">Browse the full Python API :material-arrow-right:</a>
 
 ### Deploy from a Git repository
 
@@ -39277,6 +39637,467 @@ for trace in agent.traces(search="customer-7", search_field="subject", limit=20)
 
     - <code class="doc-symbol doc-symbol-method"></code> [`Project.get_agent_serving`][hopsworks_common.project.Project.get_agent_serving]
     - <code class="doc-symbol doc-symbol-method"></code> [`ModelServing.deploy_agent`][hsml.model_serving.ModelServing.deploy_agent]
+
+    <a class="hops-api-cta" href="../../../python-api/hopsworks/">Browse the full Python API :material-arrow-right:</a>
+
+================================================================================
+# A2A
+Source: https://docs.hopsworks.ai/latest/user_guides/agents/a2a/
+
+---
+description: How an agent deployment speaks A2A, the Agent2Agent protocol, so other agents and A2A clients can discover it and delegate work to it: the Agent Card, messages and tasks, streaming, artifacts, questions for a person, where tasks are kept, who may see them, push notifications, the signed card, and calling one from Python.
+---
+
+# A2A on Hopsworks
+
+## Introduction
+
+The [chat contract][the-chat-contract] is how a person, through the chat panel or the Python client, talks to an agent.
+A2A, the [Agent2Agent protocol](https://a2a-protocol.org), is how another agent talks to it.
+An agent written in Google ADK, LangGraph, the Microsoft Agent Framework or anything with an A2A client resolves the agent's Agent Card, sends it a message, and receives a task that moves through a lifecycle, streams its progress, and carries named artifacts.
+
+Every agent built on `AgentApp` speaks A2A 1.0 with nothing to add to the handler.
+The same deployment answers the chat panel over the chat contract and other agents over A2A, on the same URL and with the same credential.
+Only an agent on an image with this SDK serves a card; an agent on an older image answers the chat contract only, and its deployment page shows no A2A section.
+
+## What is served
+
+| Route | Purpose |
+| --- | --- |
+| `GET /.well-known/agent-card.json` | The Agent Card: name, skills, media types, security schemes and the interface URLs |
+| `POST /a2a` | The JSON-RPC binding: `SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask` |
+| `/a2a/rest/...` | The HTTP+JSON binding of the same operations, for example `POST /a2a/rest/message:send` and `GET /a2a/rest/tasks/{id}` |
+| `GET /a2a/artifacts/{task}/{digest}` | A [large part][a2a-large-artifacts] of a task, for whoever may read the task |
+
+The routes sit under the deployment's URL, behind the same gateway as the chat routes, so an A2A client authenticates exactly as the chat panel does: `Authorization: ApiKey <serving api key>` or a bearer session token.
+The card says so in its security schemes.
+
+A client of your own must send the header `A2A-Version: 1.0` on every request, as the official clients do.
+A request without it is taken for the 0.3 protocol and refused.
+
+## The Agent Card
+
+The card is built from the fields you already give `AgentApp`.
+Its skills are the ones you declare, or one `chat` skill derived from the name, the description and the suggested prompts.
+Its media types come from the modalities, listed one by one because the agent's own input validator checks each inbound part's type by exact membership against the card.
+
+```python
+from hopsworks_agents.protocol import AgentApp, AgentSkill
+
+
+agent_app = AgentApp(
+    name="Churn analyst",
+    description="Answers questions about customer churn from the feature store",
+    suggested_prompts=["Which segments churned most last quarter?"],
+    skills=[
+        AgentSkill(
+            id="churn-report",
+            name="Churn report",
+            description="Monthly churn by segment as text and a CSV",
+            tags=["churn", "analytics"],
+            output_modes=["text/plain", "text/csv"],
+        )
+    ],
+)
+```
+
+`input_media_types=` and `output_media_types=` replace the derived lists when an agent takes more or less than its modalities say.
+`a2a=False` removes the card and the routes.
+
+The interface URLs in the card are the deployment's public URL, which Hopsworks sets on the pod.
+An agent run locally derives them from each request instead.
+The card also carries the 0.3 `url`, `preferredTransport` and `protocolVersion` fields, so a client of the previous protocol version can discover the agent.
+
+## A message becomes a turn, a turn becomes a task
+
+An A2A message reaches your handler as the same `ChatRequest` a chat turn does.
+
+- `contextId` is the conversation: memory, the subject index and the trace all key on it.
+- `text` parts are the text; `raw` parts become image, audio or file content by media type; `data` parts land in `request.context`; `url` parts reach the handler as `request.urls`, untouched, unless the author set `AgentApp(fetch_urls=[...])` for their host.
+- `metadata.hopsworks` on the message carries `subject`, `context` and `metadata`, the same three things the chat contract carries.
+
+The turn's answer is a task.
+The reply text is always the artifact named `response`, streamed chunk by chunk when the agent has a stream handler, and the task's final status message carries the answer with `metadata.hopsworks` holding the trace id, the citations, the usage and the subject.
+A step reported with `ctx.emit_event` goes out as a working status with the step under `metadata.hopsworks.step`.
+A refusal raised as `AgentError` fails the task with the agent's code under `metadata.hopsworks.status`; content the agent does not take is refused before any task exists.
+
+### Artifacts
+
+Named outputs beyond the reply are artifacts, returned whole or streamed while the handler works.
+
+```python
+from hopsworks_agents.protocol import AgentResponse, Artifact, TextContent
+
+
+@agent_app.chat
+async def chat(request, ctx):
+    await ctx.emit_artifact("log", TextContent(text="fetching segments..."))
+    summary, csv_b64 = await churn_report(request.text)
+    return AgentResponse.text(
+        summary,
+        artifacts=[Artifact(name="churn.csv", media_type="text/csv", data=csv_b64)],
+    )
+```
+
+The first chunk of an artifact creates it; a later chunk appends to it only when sent with `append=True`, otherwise it replaces it, and `last=True` closes the artifact.
+Artifacts whose media type the caller did not accept are left out, and their names are listed under `metadata.hopsworks.dropped_artifacts` on the final status.
+
+#### Large artifacts { #a2a-large-artifacts }
+
+A stored task keeps small parts inline and large ones beside the database.
+A `raw` part larger than 256 KiB is written to the deployment's artifact storage when its task is saved.
+The stored task then carries a `url` part in its place, pointing at `/a2a/artifacts/...` under the deployment's URL, with the size and the SHA-256 digest of the bytes under `metadata.hopsworks`.
+The 2 MiB cap applies to everything a task holds, as stored: its artifacts, its history, its status and its metadata.
+When a task is larger, its largest remaining parts are stored the same way, large text and `data` parts included.
+When it still does not fit, its oldest history messages are dropped first, then the content of its largest parts is omitted and replaced by a line that gives the size, and then any metadata other than `metadata.hopsworks`.
+The task's `metadata.hopsworks` then says `truncated: true`, with the counts in `dropped_history_messages` and `omitted_parts`.
+A task that still does not fit is stored without its artifacts and history, with a status message that says so.
+An administrator can change both limits, see [cluster settings][a2a-cluster-settings].
+
+A streaming caller receives the bytes inline in the events.
+A caller that reads the task afterwards receives the URL, and fetches it with the credential it reads the task with:
+
+```python
+from a2a.types import GetTaskRequest
+
+
+async def download(client, http, task_id):
+    task = await client.get_task(GetTaskRequest(id=task_id))
+    files = {}
+    for artifact in task.artifacts:
+        for part in artifact.parts:
+            if part.WhichOneof("content") == "url":
+                response = await http.get(part.url)
+                response.raise_for_status()
+                files[artifact.name] = response.content
+    return files
+```
+
+Here `client` and `http` are the A2A client and the `httpx` client of the [Python example](#calling-an-agent-over-a2a-from-python) below.
+
+### Questions for a person
+
+`ctx.interrupt` pauses the task as `INPUT_REQUIRED`, or as `AUTH_REQUIRED` when every open question was asked with `reason="auth_required"`.
+The questions ride in a `data` part of the status message, and the answer comes back as a message on the same task: a `data` part naming the question, `{"<interrupt id>": <payload>}`, or plain text when one question is open.
+An answer that names a question the task did not ask, or leaves one open, is refused as an invalid-params error and the task stays paused.
+A question that expired, or whose record is gone, fails the task, with `interrupt_expired` or `nothing_to_resume` under `metadata.hopsworks.status`.
+A record is gone when the conversation was erased, or when the agent keeps its memory or its tasks in the process and the pod restarted.
+An agent with [memory turned on from the deployment][agent-memory] keeps its open questions in the project's database, so a paused task is answered on any replica, and after a restart.
+A task that is running the action a person approved cannot be cancelled: `CancelTask` is refused and the task finishes.
+
+Do not put a credential in a message: every message is kept in the task's history.
+An `auth_required` question describes what is needed in its `metadata`, and the answer is a reference the handler resolves itself, such as the name of a project secret.
+
+### Several tasks on one context
+
+A client may open a second task on a context while the first runs.
+Each turn reads the conversation as it was when the turn first read it, and the store keeps every turn's rows together, in the order the turns started.
+An agent that wants one task at a time per context sets `AgentApp(a2a=A2AConfig(serialize_context=True))`, with `from hopsworks_agents.protocol.a2a import A2AConfig`, and the next task waits as `SUBMITTED` until the running one ends or pauses.
+`serialize_context` orders the tasks of one replica: two replicas may still each run a task on the same context.
+
+## Where tasks are kept { #a2a-task-store }
+
+On a deployment, tasks are kept in the project's online database, in tables Hopsworks creates when the deployment is created or started.
+The tables are readable by the deployment's own database user and by the project's Data Owners.
+Any replica reads, lists, cancels, answers or follows (`SubscribeToTask`) a task, whichever replica ran it, and a task outlives the pod that ran it.
+A deployment with several instances needs no setting for this.
+Finished tasks are deleted after a retention period, 30 days by default, see [cluster settings][a2a-cluster-settings].
+The large parts a task kept beside the database, under `Resources/agents/a2a/` in the project, are deleted with it.
+
+An agent can choose to keep its tasks in the process instead:
+
+```python
+from hopsworks_agents.protocol import AgentApp
+from hopsworks_agents.protocol.a2a import A2AConfig
+
+
+agent_app = AgentApp(name="Churn analyst", a2a=A2AConfig(task_store="memory"))
+```
+
+Tasks are then per replica and gone with the pod, so `GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask` and an answer to a question must reach the replica that ran the task.
+Run such an agent with one instance.
+`A2AConfig(max_tasks=..., max_task_bytes=...)` is the budget of the in-memory store: finished and paused tasks count, and the oldest are dropped first.
+
+The in-memory store is only used when the author chose it.
+A deployment that cannot reach a database, and whose author did not choose memory, serves no card and no A2A routes.
+Its manifest then says `a2a: {enabled: false, reason: "no_database"}`, or `no_database_driver` when the image lacks the `agents-memory` extra of the `hopsworks` package.
+A project without an online feature store has no such database.
+
+A local run keeps tasks in the process.
+Set `HOPSWORKS_AGENT_A2A_DATABASE_URL` to an async SQLAlchemy URL, for example `sqlite+aiosqlite:///tasks.db`, to run locally with the database store.
+
+The manifest says which store is in use, as `task_store: "database"` or `task_store: "memory"` under `capabilities.custom.hopsworks.a2a`.
+
+## Who may see a task
+
+By default every holder of the deployment's credential sees every task of the deployment, the same way the conversation routes work, see [Agent Memory][agent-memory].
+
+An agent built with `memory_routes=False` is **private**:
+
+```python
+from hopsworks_agents.protocol import AgentApp
+
+
+agent_app = AgentApp(name="Support agent", memory_routes=False)
+```
+
+In a private agent a task, a conversation, its memory, its open questions and its push notification configs belong to the caller.
+The caller is the principal the gateway verified from the request's credential and passed to the agent in the `x-hopsworks-principal` header.
+This holds over A2A and over the chat routes alike.
+Private mode separates the callers of the agent's API; the tasks stay in the project's online database, as [above][a2a-task-store].
+
+- Another caller's task is answered as `TaskNotFoundError`, for `GetTask` and `CancelTask`, and `ListTasks` lists only the caller's own.
+- A new task by another caller on the same `contextId` starts an empty conversation.
+- The handler and the wire still see the plain ids; the caller is added where tasks and memory are stored.
+
+Behind the gateway a private agent refuses a request that names no caller, with HTTP `401` and the code `principal_required`.
+A local run has no gateway and treats every caller as `anonymous`.
+
+The principal is the credential's owner, so callers that share one credential are one caller.
+An application that calls the agent with one key on behalf of many people keeps those people apart itself.
+
+The manifest says `private: true` for such an agent.
+
+## A task whose replica is lost
+
+A running task holds a lease in the database, which its replica renews with a heartbeat every 10 seconds.
+The heartbeat also carries a cancel to the replica that runs the task: `CancelTask` may reach any replica, and the handler stops within one interval, with `ctx.cancelled` set.
+
+When a replica stops renewing a lease for 30 seconds, a surviving replica takes the lease, or Hopsworks does when no replica is left.
+The task then ends as `FAILED`, with this under `metadata.hopsworks` on its final status:
+
+```json
+{"status": "executor_lost", "outcome": "unknown", "retryable": true}
+```
+
+`outcome: unknown` means that nothing is known about how far the handler got.
+The caller decides whether to send the message again.
+
+A deployment that is stopped, restarted or scaled down ends its tasks in order instead.
+The replica takes no new work and gives every accepted task a drain window, 10 minutes by default, to finish.
+A task still running at the end of the window ends as `FAILED` with `status: "executor_shutdown"` and `retryable: true`.
+
+A task sent with `returnImmediately` keeps running after the caller disconnected, so nothing but its replica holds it.
+Keep at least one instance running for an agent with long detached tasks, rather than letting the deployment scale to zero while they run.
+
+An agent whose handler is safe to run twice can have a lost task run again instead of failed:
+
+```python
+from hopsworks_agents.protocol import AgentApp
+from hopsworks_agents.protocol.a2a import A2AConfig
+
+
+agent_app = AgentApp(
+    name="Churn analyst",
+    a2a=A2AConfig(idempotent=True, retry_lost_tasks=1),
+)
+```
+
+A surviving replica then runs the task again from the start, up to `retry_lost_tasks` times, with `attempt` counted in the task's metadata.
+The task stays `WORKING` until it ends or the retries run out.
+Hopsworks applies the same limit when it finds the lost task first: it hands the task back to the deployment's replicas, and fails it as `executor_lost` only when no replica takes it within 90 seconds.
+`retry_lost_tasks` needs `idempotent=True`, and such an agent needs at least one replica left to run the task again.
+
+## Push notifications
+
+A caller that does not want to hold a stream open or poll registers a webhook, and the task's events are posted to it.
+The webhook is registered with the message, as `configuration.taskPushNotificationConfig`, or later with the protocol's push notification config operations.
+
+```python
+import uuid
+
+from a2a.types import (
+    Message,
+    Part,
+    Role,
+    SendMessageConfiguration,
+    SendMessageRequest,
+    TaskPushNotificationConfig,
+)
+
+request = SendMessageRequest(
+    message=Message(
+        message_id=str(uuid.uuid4()),
+        role=Role.ROLE_USER,
+        parts=[Part(text="Build the quarterly churn report")],
+    ),
+    configuration=SendMessageConfiguration(
+        return_immediately=True,
+        task_push_notification_config=TaskPushNotificationConfig(
+            url="https://hooks.example.com/a2a/notifications",
+            token=notification_token,
+            authentication={"scheme": "Bearer", "credentials": receiver_token},
+        ),
+    ),
+)
+```
+
+Each notification is an HTTP `POST` of one event of the task, as JSON, for example `{"statusUpdate": {"taskId": "...", "contextId": "...", "status": {...}}}`.
+
+| Header | Value |
+| --- | --- |
+| `X-A2A-Notification-Token` | The `token` of the config, when one was given |
+| `Authorization` | `<scheme> <credentials>` from the config's `authentication`, when one was given |
+
+The push config is stored encrypted, with a key per deployment.
+A deployment serves push notifications only when Hopsworks gave it its encryption key.
+Otherwise its card says `pushNotifications: false` and its manifest says `push_notifications: false`.
+
+### Where a webhook may be
+
+The URL is checked when the webhook is registered and again when a notification is sent.
+A URL that is not allowed is refused at registration as an invalid-params error (`-32602`).
+
+- The URL must be HTTPS.
+- A host with a public address is allowed.
+- A host with a private address is allowed only when an administrator listed the host or its network.
+- Loopback, link-local, multicast and cloud metadata addresses are never allowed.
+- When an administrator set a list of allowed hosts, only those hosts are allowed.
+
+Both lists are [cluster settings][a2a-cluster-settings].
+The cluster's own inference gateway is always listed, so one agent deployment can notify another when the gateway is served over HTTPS.
+For that, give the push config a callback key of the receiving deployment as its credential, `{"scheme": "ApiKey", "credentials": "<callback key>"}`.
+A callback key is issued by `POST /hopsworks-api/api/project/{projectId}/serving/{servingId}/agents/callback-key`, which answers `{"key": "...", "expiresAt": "..."}`.
+The key opens only `POST /a2a/notifications` of that deployment, and expires after the task retention period.
+Redirects are not followed.
+
+### Delivery
+
+Delivery is queued, so a slow receiver does not hold the task's own stream.
+A notification times out after 10 seconds.
+It is tried again three times, after 1, 4 and 16 seconds, on a connection error or a `5xx` answer.
+It is not tried again on a redirect or a `4xx` answer.
+
+Events before the last one are best effort, and may be dropped when the receiver is slower than the task.
+The terminal event is owed until it was delivered: when the replica could not deliver it, Hopsworks does.
+A receiver may therefore see the same event twice.
+Write the receiver to tolerate duplicates, and to read the task with `GetTask` for its current state rather than rebuild it from notifications.
+
+## The extended card, and the signature
+
+`GetExtendedAgentCard` returns the card with what the agent's manifest knows, for a caller that authenticated.
+The memory tiers, the conversation and feedback endpoints, tool events and the graph are under the `agent` parameter of the [Hopsworks extension](#the-hopsworks-extension).
+The public card sets `capabilities.extendedAgentCard`, and does not carry the `agent` parameter.
+
+On a deployment the card served at the deployment's public URL carries a signature.
+Hopsworks signs the card when the deployment starts, with a key the cluster holds, and only signs a card whose interface URLs are the deployment's own.
+The cluster publishes the matching public keys as a JSON Web Key Set at `https://<hopsworks>/hopsworks-api/api/agents/jwks.json`, which needs no credential.
+The signature is ES256, and the previous key stays listed after a rotation.
+The signature's protected header names the project, the deployment and the serving id the card was signed for, as `hw_project`, `hw_deployment` and `hw_serving_id`.
+The manifest says whether the card is signed, as `signed: true` or `signed: false`; a card built for a local run is not signed.
+
+A client verifies the card with the official SDK and [PyJWT](https://pyjwt.readthedocs.io), reading the keys from the address of the cluster it trusts:
+
+```python
+import httpx
+from a2a.client import A2ACardResolver
+from a2a.utils.signing import create_signature_verifier
+from jwt import PyJWKClient
+
+base = "https://<inference-lb>/v1/<project-namespace>/<deployment>"
+headers = {"Authorization": f"ApiKey {serving_key}"}
+keys = PyJWKClient("https://<hopsworks>/hopsworks-api/api/agents/jwks.json")
+
+
+def key_for(kid, jku):
+    return keys.get_signing_key(kid)
+
+
+verify = create_signature_verifier(key_for, ["ES256"])
+
+
+async def verified_card():
+    async with httpx.AsyncClient(headers=headers) as http:
+        resolver = A2ACardResolver(http, base)
+        return await resolver.get_agent_card(signature_verifier=verify)
+```
+
+`get_agent_card` raises when the card carries no signature that verifies against the cluster's keys.
+
+## Cluster settings { #a2a-cluster-settings }
+
+An administrator sets these variables on the [Cluster Configuration][cluster-configuration] page.
+A deployment reads them when it starts, so restart a running deployment to apply a change.
+Hopsworks reads the reaper interval when it starts.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `agent_deployment_push_internal_allow` | empty | Comma-separated host names and networks (CIDR) with private addresses that agents may post notifications to, and fetch `url` parts from. The inference gateway's addresses are always included. |
+| `agent_deployment_push_allowed_hosts` | empty | Comma-separated host names. When set, a webhook is accepted only on one of these hosts. Empty means any host the rules above allow. |
+| `agent_deployment_artifact_inline_bytes` | `262144` | The size in bytes above which a `raw` part of a task is stored beside the database and served by URL. |
+| `agent_deployment_task_max_bytes` | `2097152` | The most a stored task holds inline, in bytes, all parts together. |
+| `agent_deployment_task_retention_days` | `30` | How many days a finished task is kept, with its events and its push notification configs. |
+| `agent_deployment_task_reaper_interval_ms` | `15000` | How often, in milliseconds, Hopsworks ends the tasks whose lease nobody renews and delivers the terminal notifications a replica could not. |
+
+## Calling an agent over A2A from Python
+
+Any A2A client works.
+With the official Python SDK, against the same URL and credential the chat panel uses:
+
+```python
+import uuid
+
+import httpx
+from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
+from a2a.types import Message, Part, Role, SendMessageRequest
+
+base = "https://<inference-lb>/v1/<project-namespace>/<deployment>"
+headers = {"Authorization": f"ApiKey {serving_key}"}
+
+
+async def ask():
+    async with httpx.AsyncClient(headers=headers) as http:
+        card = await A2ACardResolver(http, base).get_agent_card()
+        config = ClientConfig(httpx_client=http, streaming=False)
+        client = ClientFactory(config).create(card)
+        request = SendMessageRequest(
+            message=Message(
+                message_id=str(uuid.uuid4()),
+                role=Role.ROLE_USER,
+                parts=[Part(text="Which segments churned most last quarter?")],
+            )
+        )
+        async for event in client.send_message(request):
+            print(event.task.status.state)
+```
+
+The base URL is the one the deployment page shows under *A2A*, and the key is an [API key][how-to-create-an-api-key] with the `SERVING` scope.
+
+## What this release covers
+
+The manifest describes the agent's A2A face under `capabilities.custom.hopsworks.a2a`: the bindings, `task_store`, `private`, `push_notifications`, `extended_card`, `signed`, `serialize_context` and `retry_lost_tasks`.
+It says `a2a: {enabled: false, reason: "sdk_missing"}` when the `a2a-sdk` package is not installed, and `reason: "no_database"` when the deployment has [no database for its tasks][a2a-task-store].
+gRPC, per-agent hostnames and a client for calling other agents from a handler are not in this release.
+
+!!! note "Not yet available"
+
+    - Completing an OAuth authorization that an agent asked for with `AUTH_REQUIRED` through a Hopsworks callback.
+    - Callback keys on clusters whose inference gateway is Envoy Gateway.
+    - Tooling to rotate the card signing key.
+
+## The Hopsworks extension
+
+The card declares one extension, `https://hopsworks.ai/a2a/extensions/hopsworks/v1`, which is not required: it only names what `metadata.hopsworks` carries, and a client that never asks for it gets a conforming response.
+Its `params` on the card are the keys below, with the same one-line descriptions.
+
+| Key | Direction | What it carries |
+| --- | --- | --- |
+| `subject` | In, on the message | Who the agent is talking to, for its memory |
+| `context` | In, on the message | Anything the handler should see with the request |
+| `metadata` | In, on the message | Free-form metadata for the handler |
+| `trace_id` | Out | The turn's trace, for feedback and evaluation |
+| `citations` | Out, on the final status | The sources the reply cites |
+| `usage` | Out, on the final status | Token counts |
+| `step` | Out, on a working status | A step the agent reported |
+| `tool_call` | Out, on a working status | A tool call the agent made |
+| `interrupts` | Out, on an input- or auth-required status | The questions asked |
+| `status` | Out, on a failed status | The agent's error code |
+| `retryable` | Out, on a failed status | Whether a retry is worth it |
+
+!!! api "API reference"
+
+    - <code class="doc-symbol doc-symbol-method"></code> [`Project.get_agent_serving`][hopsworks_common.project.Project.get_agent_serving]
+    - <code class="doc-symbol doc-symbol-docs"></code> [A2A protocol specification](https://a2a-protocol.org/latest/specification/)
 
     <a class="hops-api-cta" href="../../../../python-api/hopsworks/">Browse the full Python API :material-arrow-right:</a>
 
@@ -40442,6 +41263,7 @@ The Anthropic `count_tokens` operation answers `422`, which Claude Code does not
 
 The LLM Gateway serves a deployment when the cluster has it and both its project and deployment [switches][rest-api-llm-gateway] are on.
 A deployment in Knative mode or one that scales to zero is not served by it.
+To have a Knative-mode deployment served, [convert it to Standard mode][knative-mode-deprecated].
 
 ### Direct { #coding-agents-direct }
 
@@ -40897,8 +41719,8 @@ This guide shows how to set up the Hopsworks platform on Amazon EKS in your orga
 
 To follow the instructions on this page you will need the following:
 
-- Kubernetes version: Hopsworks supports EKS clusters running Kubernetes >= 1.27.0 and < 1.35.0 (the chart's supported range, enforced by its `kubeVersion` constraint).
-  Pick a version in that range that is also under [AWS standard support](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html), for example 1.33.
+- Kubernetes version: Hopsworks supports EKS clusters running Kubernetes >= 1.33.0 and < 1.38.0 (the chart's supported range, enforced by its `kubeVersion` constraint).
+  Pick a version in that range that is also under [AWS standard support](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html), for example 1.37.
 - [aws-cli](https://aws.amazon.com/cli/) to provision the AWS resources.
 - [eksctl](https://eksctl.io/) to create and manage the EKS cluster.
 - [kubectl](https://kubernetes.io/docs/tasks/tools/) to interact with the cluster.
@@ -41037,7 +41859,7 @@ kind: ClusterConfig
 metadata:
   name: CLUSTER_NAME
   region: REGION
-  version: "1.33"
+  version: "1.37"
 
 iam:
   withOIDC: true
@@ -41047,8 +41869,8 @@ managedNodeGroups:
     amiFamily: AmazonLinux2023
     instanceType: m6i.2xlarge
     minSize: 1
-    maxSize: 5
-    desiredCapacity: 5
+    maxSize: 6
+    desiredCapacity: 6
     volumeSize: 100
     # ssh:                              # optional: enable SSH access to the nodes
     #   allow: true
@@ -41066,6 +41888,66 @@ addons:
     wellKnownPolicies:      # add IAM role and service account
       ebsCSIController: true
 ```
+
+The Hopsworks pods request close to the CPU of five m6i.2xlarge nodes, so the example uses six to leave room for scheduling them and for user jobs and notebooks.
+
+#### Optional: dedicated node groups { #eks-dedicated-node-groups }
+
+The configuration above runs every pod on one node group.
+To keep the RonDB data nodes, the platform services and user workloads on separate nodes, replace `managedNodeGroups` with three groups that carry the labels and taints of [Dedicated node pools][dedicated-node-pools], and save the values from that page in a second file, which Step 2.4 passes with another `--values`, because both files set `global` and `rondb`.
+Setting the labels and taints on the node groups, rather than with kubectl, keeps them on every node a group adds or replaces.
+
+```yaml
+managedNodeGroups:
+  - name: head
+    amiFamily: AmazonLinux2023
+    instanceType: m6i.2xlarge
+    minSize: 5
+    maxSize: 6
+    desiredCapacity: 5
+    volumeSize: 100
+    labels:
+      node: Head
+    taints:
+      - key: node
+        value: Head
+        effect: NoSchedule
+    iam: &iam
+      attachPolicyARNs:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::ECR_AWS_ACCOUNT_ID:policy/POLICY_NAME
+      withAddonPolicies:
+        awsLoadBalancerController: true
+  - name: rondb
+    amiFamily: AmazonLinux2023
+    instanceType: m6i.xlarge
+    minSize: 2
+    maxSize: 2
+    desiredCapacity: 2
+    volumeSize: 100
+    labels:
+      node: RonDB
+    taints:
+      - key: node
+        value: RonDB
+        effect: NoSchedule
+    iam: *iam
+  - name: worker
+    amiFamily: AmazonLinux2023
+    instanceType: m6i.2xlarge
+    minSize: 1
+    maxSize: 3
+    desiredCapacity: 1
+    volumeSize: 100
+    labels:
+      node: Worker
+    iam: *iam
+```
+
+- The head group needs at least five nodes and the database group at least two: the chart runs five HopsFS DataNodes and two RonDB data nodes by default, each on a node of its own.
+- CoreDNS and the AWS Load Balancer Controller do not tolerate the two taints, so they run on the worker nodes.
 
 Create the EKS cluster:
 
@@ -41097,8 +41979,8 @@ If the controller cannot auto-detect the VPC, pass `--set region=REGION` and `--
 
 ### Step 1.6: Create a GP3 storage class
 
-EKS clusters typically provide `gp2` as the default storage class.
-`gp3` is more cost effective and is the storage class referenced by the Helm values below (`storageClassName: ebs-gp3`), so create it:
+`gp3` is more cost effective than `gp2` and is the storage class referenced by the Helm values below (`storageClassName: ebs-gp3`), so create it.
+Make it the cluster's default storage class as well: some components, such as the MySQL database of Superset, request volumes without naming a storage class, and without a default storage class those volumes stay pending and their pods never start.
 
 ```bash
 kubectl apply -f - <<EOF
@@ -41106,6 +41988,8 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: ebs-gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
 provisioner: ebs.csi.aws.com
 parameters:
   csi.storage.k8s.io/fstype: xfs
@@ -41116,7 +42000,9 @@ allowVolumeExpansion: true
 EOF
 ```
 
-If you prefer to keep the default `gp2` storage class, set `storageClassName` to `gp2` in the Helm values and skip this step.
+Check with `kubectl get storageclass` that `ebs-gp3` is the only class marked `(default)`.
+If another class is marked too, remove its mark with `kubectl annotate --overwrite storageclass CLASS storageclass.kubernetes.io/is-default-class=false`, because with two defaults a volume that names no class gets the most recently created one.
+If you prefer `gp2`, set `storageClassName` to `gp2` in the Helm values, mark it as the default with `kubectl annotate --overwrite storageclass gp2 storageclass.kubernetes.io/is-default-class=true`, and skip this step.
 
 ### Step 1.7: Request an ACM certificate for your domain
 
@@ -41240,6 +42126,15 @@ kafka:
 
 rondb:
   rondb:
+    meta:
+      mysqld:
+        externalLoadBalancer:
+          annotations:
+            service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+      rdrs:
+        externalLoadBalancer:
+          annotations:
+            service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
     resources:
       requests:
         storage:
@@ -41281,6 +42176,8 @@ kserve:
 ```bash
 helm install hopsworks hopsworks/hopsworks --namespace hopsworks --values values.aws.yaml --timeout=3600s
 ```
+
+With the [dedicated node groups][eks-dedicated-node-groups], add `--values` with the file that holds the values of [Dedicated node pools][dedicated-node-pools].
 
 A first install pulls and syncs large base images and provisions stateful services, so allow up to an hour to complete; the chart's own deployment examples use `--timeout=3600s`.
 A Helm timeout does not roll back the release, the deployment keeps reconciling in the background, so if it times out, track progress with kubectl rather than reinstalling:
@@ -41342,9 +42239,13 @@ Enabling the external load balancers in the values file provisions a load balanc
 - mysql: queries online feature store data using the MySQL APIs.
 - opensearch: queries the Hopsworks vector database.
 - namenode and datanode: external access to the HopsFS file system.
+- trino: runs SQL queries from external clients on Trino (when Trino is enabled, the default).
 
 On EKS, the AWS Load Balancer Controller installed above is responsible for provisioning these load balancers.
-You can configure them using the annotations documented in the [AWS Load Balancer Controller guide](https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/ingress/annotations/).
+You can configure them using the annotations documented in the [AWS Load Balancer Controller guide](https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/service/annotations/).
+
+The RonDB load balancers (mysql and rdrs) do not read `global._hopsworks.externalLoadBalancers.annotations`, so the values file sets their scheme under `rondb.rondb.meta.mysqld.externalLoadBalancer.annotations` and `rondb.rondb.meta.rdrs.externalLoadBalancer.annotations`.
+Without these, the AWS Load Balancer Controller creates them with its default scheme, `internal`, which only clients with private connectivity to the VPC can reach.
 
 Each service has its own `externalLoadBalancer.enabled` (or, for HopsFS, `loadBalancer.enabled`) value, nested inside the relevant subchart.
 When that value is left unset it inherits `global._hopsworks.externalLoadBalancers.enabled`, which defaults to `true`, so all of these load balancers are provisioned unless you disable them.
@@ -41357,7 +42258,7 @@ The exact value paths are:
 - `olk.opensearch.externalLoadBalancer.enabled` (opensearch)
 - `hopsfs.namenode.loadBalancer.enabled` (namenode)
 - `hopsfs.datanode.loadBalancer.enabled` (datanode)
-- `trino.externalLoadBalancer.enabled` (only when Trino is enabled)
+- `trino.externalLoadBalancer.enabled` (only when Trino is enabled, the default)
 
 Other load balancer providers are also supported by providing the appropriate controller, class, and annotations.
 
@@ -41397,6 +42298,7 @@ Check out our other guides for how to get started with Hopsworks and the Feature
 
 - Get started with the [Hopsworks Feature Store](https://colab.research.google.com/github/logicalclocks/hopsworks-tutorials/blob/master/quickstart.ipynb){:target="_blank"}
 - Follow one of our [guides](../../user_guides/index.md)
+- To pull the Hopsworks images from your own registry instead of `docker.hops.works`, see [Private registries and air-gapped installs][private-registry].
 
 ================================================================================
 # Azure - Getting Started
@@ -42282,7 +43184,7 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `executions_per_job_limit` | Integer | `10000` | Settings.java |
 | `executions_ttl_days` | Integer | `90` | Settings.java |
 | `factory_enabled` | Boolean | `false` | Settings.java |
-| `feature_monitoring_max_num_features` | Integer | `15` | Settings.java |
+| `feature_monitoring_max_num_features` | Integer | `32` | Settings.java |
 | `featurestore_asof_spine_max_bytes` | Long | `1073741824` | Settings.java |
 | `featurestore_asof_spine_max_columns` | Integer | `256` | Settings.java |
 | `featurestore_asof_spine_max_file_age_ms` | Long | `86400000` | Settings.java |
@@ -42413,6 +43315,7 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `kube_keystore_path` | String | `/srv/hops/certs-dir/kube/hopsworks/hopsworks__kstore.jks` | Settings.java |
 | `kube_knative_domain_name` | String | `hopsworks.ai` | Settings.java |
 | `kube_knative_lb_domain` | String | *(empty string)* | Settings.java |
+| `kube_knative_mode_allowed` | Boolean | `false` | Settings.java |
 | `kube_kserve_installed` | Boolean | `false` | Settings.java |
 | `kube_kserve_tensorflow_version` | String | *(empty string)* | Settings.java |
 | `kube_master_url` | String | `https://192.168.68.102:6443` | Settings.java |
@@ -42424,6 +43327,7 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `kube_scheduling_jobinit_cpu_requests` | Double | `0.5` | Settings.java |
 | `kube_scheduling_jobinit_memory_limits_mb` | Double | `512.0` | Settings.java |
 | `kube_scheduling_jobinit_memory_requests_mb` | Double | `256.0` | Settings.java |
+| `kube_scheduling_model_hopsfsmount_cpu_requests` | Double | `0.5` | Settings.java |
 | `kube_serving_apikey_reaper_grace_minutes` | Integer | `10` | Settings.java |
 | `kube_serving_apikey_reaper_interval_minutes` | Integer | `15` | Settings.java |
 | `kube_serving_max_num_instances` | Integer | `-1` | Settings.java |
@@ -42695,6 +43599,15 @@ See [Cluster Configuration][cluster-configuration] for how to view and change th
 | `staging_dir` | String | `/srv/hops/domains/domain1/staging` | Settings.java |
 | `statistics_cleaner_batch_size` | Integer | `1000` | Settings.java |
 | `statistics_cleaner_interval_ms` | Integer | `900000` | Settings.java |
+| `statistics_incremental_allowed` | Boolean | `true` | Settings.java |
+| `statistics_incremental_enabled` | Boolean | `false` | Settings.java |
+| `statistics_incremental_full_profile_every` | Integer | `50` | Settings.java |
+| `statistics_job_bytes_per_executor` | Long | `0` | Settings.java |
+| `statistics_job_driver_memory` | String | *(empty string)* | Settings.java |
+| `statistics_job_executor_cores` | String | *(empty string)* | Settings.java |
+| `statistics_job_executor_memory` | String | *(empty string)* | Settings.java |
+| `statistics_job_max_executors` | String | *(empty string)* | Settings.java |
+| `statistics_retention_rows_per_entity` | Integer | `0` | Settings.java |
 | `sudoers_dir` | String | `/srv/hops/sbin` *(duplicate key, also declared in Settings.java; values match)* | CAConf.java |
 | `sudoers_dir` | String | `/srv/hops/sbin` *(duplicate key, also declared in CAConf.java; values match)* | Settings.java |
 | `superset_admin_roles` | String | `Admin` | Settings.java |
@@ -43116,7 +44029,10 @@ You can find them by clicking on your name in the top right corner of the naviga
   <figcaption>Active Users</figcaption>
 </figure>
 
-### Step 2: Manage user roles
+The page has an _Active_ and a _Blocked_ tab, each showing how many users it holds.
+Each row shows the user's account type, role, number of projects, project limit, rate limit and last login.
+
+### Step 2: Edit a user
 
 Roles let you manage the access rights of a user to the cluster.
 
@@ -43124,7 +44040,20 @@ Roles let you manage the access rights of a user to the cluster.
 - Admin: users with this role are allowed to manage the cluster.
   This includes accepting new users to the cluster or blocking them, managing user quota, [configure alerts](./alert.md) and setting up [authentication methods](./auth.md).
 
-You can change the role of a user by clicking on the _select dropdown_ that shows the current role of the user.
+To change a user, click their row or the pencil icon at the end of it.
+A side panel opens with the user's details.
+Choose the role, set the maximum number of projects the user can create, or set their rate limit, then click _Save_.
+
+- _Max projects_ takes a whole number, where 0 means the user cannot create projects; turn on _Unlimited_ to remove the limit.
+- _Rate limit_ sets the user's API request burst and rate per second; leave both fields empty to use the cluster default.
+
+You cannot change your own role.
+The role of a user who signs in through OAuth2 is set through group mapping while `oauth_group_mapping_enabled` is on, and that of an LDAP or Kerberos user while `ldap_group_mapping_enabled` is on; with mapping off, their role is changed here like any other.
+
+<figure>
+  <img width="400px" src="../../../assets/images/admin/user-management/edit-user.png" alt="The side panel for editing a user, with role, max projects, rate limit and password settings" />
+  <figcaption>Edit a user</figcaption>
+</figure>
 
 ### Step 3: Validating and blocking users
 
@@ -43142,22 +44071,22 @@ Each pending row carries an _Activate_ and a _Block_ button.
 A marker next to the email address shows that the address has not been validated yet.
 
 Similarly, if a user is no longer allowed access to the cluster you can block them.
-To keep consistency with the history of your datasets, a user can not be deleted but only blocked.
-If necessary a user can be deleted manually in the cluster using the command line.
-You can block a user by clicking on the block icon on the right side of the user in the list.
+Open the user's side panel, click _Block_ and confirm.
+A blocked user can no longer log in and moves to the _Blocked_ tab.
 
 <figure>
   <img src="../../../assets/images/admin/user-management/blocked-users.png" alt="blocked users" />
   <figcaption>Blocked Users</figcaption>
 </figure>
 
-Blocked users will appear on the lower section of the page.
-Click on _Show blocked users_ to show all the blocked users in your cluster.
-If a user is blocked by mistake you can reactivate it by clicking on the check mark icon that corresponds to that user in the blocked users list.
+The _Blocked_ tab lists every blocked user with the reason, such as being blocked by an administrator or after too many failed logins.
+If a user is blocked by mistake, click _Unblock_ in their row to give them access again.
+
+A user who has no projects can also be deleted: open their side panel, click _Delete_ and type `confirm`.
 
 If there are too many users in your cluster, use the search box (available for blocked users too) to filter users by name or email.
 It is also possible to filter activated users by role.
-For example to see all administrators in you cluster click on the _select dropdown_ to the right of the search box and choose _Admin_.
+For example to see all administrators in your cluster click on the _select dropdown_ to the right of the search box and choose _Admin_.
 
 ### Step 4: Create a new users
 
@@ -43187,9 +44116,10 @@ Copy the password and pass it securely to the user.
 
 In the case where a user loses her/his password and can not recover it with the [password recovery](../../user_guides/projects/auth/recovery.md), an administrator can reset it for them.
 
-On the bottom of the _Users_ page, under _Advanced features_, click on _Reset a user password_.
-A popup window with a dropdown for searching users by name or email will open.
-Find the user and click on _Reset new password_.
+Open the user's side panel, click _Reset password_ and confirm.
+The password is replaced with a temporary one, and the user receives an email saying that an administrator reset it.
+Only Hopsworks accounts have a password to reset: users who sign in through LDAP, Kerberos or OAuth2 use their directory's password.
+
 <figure>
   <img src="../../../assets/images/admin/user-management/reset-password.png" alt="reset password" />
   <figcaption>Reset user password</figcaption>
@@ -43281,7 +44211,9 @@ You can find the Project management page by clicking on your name, in the top ri
 </figure>
 
 This page will list all the projects in a cluster, their name, owner and when its quota was last updated.
-By clicking on the _edit configuration_ link of a project you will be able to edit the quotas of that project.
+Click the pencil icon at the end of a project's row to open its configuration.
+The configuration is split into the _Quotas_, _LLM gateway_, _Kubernetes_, _Governance_ and _Manage_ tabs, and _Save_ at the bottom saves the changes of every tab.
+A department change on the _Manage_ tab is the exception: it is applied with the _Save_ button of the _Department_ panel, not the one at the bottom.
 
 <figure>
   <img src="../../../assets/images/admin/projects/project_quotas.png" alt="Project quotas" />
@@ -43370,14 +44302,14 @@ Raising a project's index size limit makes its read-only indices writable again 
 Administrators have the option to force delete a project.
 This is useful if the project was not created or deleted properly, e.g., because of an error.
 It is also how an administrator deletes a project they do not own, since only the owner can delete a project from its settings.
-To force delete a project, click _Edit configuration_ next to it on the Project management page, then click _Force delete project_ under _Manage project_ and confirm.
+To force delete a project, open its configuration from the Project management page, then on the _Manage_ tab click _Force delete project_ and type `confirm`.
 
 ## Transferring a project to a new owner
 
 Every project has one owner, the user who created it unless it has been transferred since.
 The owner cannot be removed from the project and their role cannot be changed, so a project stays attached to an owner who has left until it is transferred.
 
-To transfer a project, click _Edit configuration_ next to it on the Project management page, then click _Transfer ownership_ under _Manage project_, choose the new owner and confirm.
+To transfer a project, open its configuration from the Project management page, then on the _Manage_ tab click _Transfer ownership_, choose the new owner and confirm.
 Any activated user with the user or administrator role can be chosen.
 The new owner is added to the project as a Data owner, or promoted to one, if they are not one already.
 A member holding a custom role is given the built-in Data owner role in its place.
@@ -43701,8 +44633,7 @@ pagerduty or webhook.
 ### Step 2: Configure Email Alerts
 
 To send alerts via email you need to configure an SMTP server.
-Click on the _Configure_
-button on the right side of the **email** row and fill out the form that pops up.
+Click the pencil icon at the end of the **email** row and fill out the form that pops up.
 
 <figure>
   <img src="../../../assets/images/alerts/smtp-config.png" alt="Configure Email Alerts"/>
@@ -43723,7 +44654,7 @@ These receivers will be available to all users when they create event triggered 
 Alerts can also be sent via Slack messages.
 To be able to send Slack messages you first need to configure
 a Slack webhook.
-Click on the _Configure_ button on the right side of the **slack** row and past in your
+Click the pencil icon at the end of the **slack** row and paste in your
 [Slack webhook](https://api.slack.com/messaging/webhooks) in _Webhook_.
 
 <figure>
@@ -43737,8 +44668,7 @@ These receivers will be available to all users when they create event triggered 
 ### Step 4: Configure Pagerduty Alerts
 
 Pagerduty is another way you can send alerts from Hopsworks.
-Click on the _Configure_ button on the right side of
-the **pager duty** row and fill out the form that pops up.
+Click the pencil icon at the end of the **pager duty** row and fill out the form that pops up.
 
 <figure>
   <img src="../../../assets/images/alerts/pagerduty-config.png" alt="Configure Pagerduty Alerts"/>
@@ -43762,7 +44692,7 @@ Prometheus' Alert manager.
 
 You can also use webhooks to send alerts.
 A Webhook Alert is sent as an HTTP POST command with a JSON-encoded parameter payload.
-Click on the _Configure_ button on the right side of the **webhook** row and fill out the form that pops up.
+Click the pencil icon at the end of the **webhook** row and fill out the form that pops up.
 
 <figure>
   <img src="../../../assets/images/alerts/webhook-config.png" alt="Configure Webhook Alerts"/>
@@ -43772,6 +44702,11 @@ Click on the _Configure_ button on the right side of the **webhook** row and fil
 Fill in the unique URL of your Webhook: the endpoint to send HTTP POST requests to.
 
 A global receiver is created when a webhook is configured and can be used by any project in the cluster.
+
+To remove the webhook channel, open its form again, click _Delete_ and type `confirm`.
+The alert routes at the top level of the alert manager configuration that send to the webhook are removed with it, so those alerts are no longer delivered there.
+_Delete_ is disabled while the webhook is the default receiver of the configuration, or while a nested route sends to it, because the delete would leave that reference pointing at nothing.
+Choose another default receiver, or remove the nested route, in the _Advanced configuration_ of Step 6 first.
 
 ### Step 6: Advanced configuration
 
@@ -44743,6 +45678,7 @@ Trino requires the driver: its password file, group file, access-control rules, 
 `global._hopsworks.csi.enabled: false` therefore renders only together with `global._hopsworks.trino.enabled: false`, and the render fails otherwise, rather than leaving every Trino pod in `ContainerCreating`.
 
 With the driver off, Airflow and the workloads Hopsworks launches go back to mounting HopsFS from a privileged container in the pod.
+Model deployments that mount HopsFS are the exception: they fail to start until their [loading strategy][loading-strategy-guide] is changed to `DOWNLOAD`, which the edit form does when the deployment is saved.
 On OpenShift the chart grants no SCC for that container, because the SCC it ships is for the node plugin only.
 The Airflow pods are then admitted only if the cluster already grants the Airflow service account `privileged`; without that grant `restricted-v2` rejects them and the Airflow Deployments stay at zero replicas.
 The same holds for the workloads Hopsworks launches.
@@ -44782,6 +45718,11 @@ kubectl label nodes db-node-1 db-node-n node=RonDB
 kubectl taint nodes db-node-1 db-node-n node=RonDB:NoSchedule
 kubectl label nodes worker-node-1 worker-node-n node=Worker
 ```
+
+On a cloud provider's managed node groups, such as EKS, AKS or GKE, set these labels and taints in the node group configuration instead, because nodes that a group adds or replaces come up without labels and taints set with kubectl.
+The [AWS getting started guide][eks-dedicated-node-groups] shows this for EKS.
+
+Each HopsFS DataNode and each RonDB data node runs on a node of its own, so with the default settings the head pool needs at least five nodes, for five DataNodes, and the database pool at least two, for two data nodes.
 
 ## Values
 
@@ -44960,6 +45901,90 @@ ray:
 A subchart setting overrides the global one, so the same pattern moves a single service to another pool.
 
 ================================================================================
+# Private Registries and Air Gap
+Source: https://docs.hopsworks.ai/latest/setup_installation/admin/private_registry/
+
+# Private registries and air-gapped installs { #private-registry }
+
+## Introduction
+
+The Hopsworks chart pulls every image from `docker.hops.works` by default.
+This guide installs it from your own registry instead, for a cluster without internet access or one that may pull only from an approved registry.
+It assumes the cluster's nodes can pull from that registry without image pull secrets, for example from Amazon ECR through the node IAM role.
+
+## How the chart names images { #private-registry-names }
+
+Every image the chart uses, including those of the third-party components it installs, is published under `docker.hops.works` at a fixed path, for example `docker.hops.works/hopsworks/rondb:<tag>` or `docker.hops.works/quay.io/jetstack/cert-manager-controller:<tag>`.
+Your registry holds the same images at the same paths, so `docker.hops.works/<path>` becomes `<registry>/<path>`.
+
+The Hopsworks images take their registry from `global._hopsworks.imageRegistry`.
+The third-party charts that the Hopsworks chart includes, such as Consul, Prometheus, Grafana, Strimzi, Superset, Trino and KEDA, take their registry or repository from their own values.
+The chart package includes `values.airgap.yaml`, which sets all of them to a placeholder registry, `private-docker.dev-cloud.hopsworks.ai:4443`.
+Download the chart version you install and write a copy of that file with your registry in its place:
+
+```bash
+helm pull hopsworks/hopsworks --version VERSION --untar
+sed 's#private-docker.dev-cloud.hopsworks.ai:4443#REGISTRY#g' hopsworks/values.airgap.yaml > values.registry.yaml
+```
+
+`REGISTRY` is the registry address with any path prefix, for example `111122223333.dkr.ecr.eu-west-1.amazonaws.com/hopsworks-mirror`.
+Take `values.airgap.yaml` from the chart version you install, because a release can add images and the values that name them.
+
+Then fill your registry, either by copying the images ([Images to mirror][private-registry-images]) or, on Amazon ECR, through a pull through cache ([Pull-through cache on Amazon ECR][private-registry-ecr-pull-through]), and install ([Install][private-registry-install]).
+
+## Images to mirror { #private-registry-images }
+
+Render the unpacked chart with your values file, such as `values.aws.yaml` from the AWS getting started guide, and the registry file, and list every image under your registry:
+
+```bash
+helm template hopsworks ./hopsworks --namespace hopsworks --skip-tests --values values.aws.yaml --values values.registry.yaml > rendered.yaml
+grep -oE 'REGISTRY/[A-Za-z0-9._/-]+[:@][A-Za-z0-9._:-]+' rendered.yaml | sort -u > images.txt
+helm show values hopsworks/charts/kserve --jsonpath '{.istio.istioctl.targetVersion}'
+```
+
+The list covers the images that an install and the platform's workloads pull, including those started later, such as the base images of jobs and notebooks and the Kafka brokers.
+Add `REGISTRY/istio/pilot` and `REGISTRY/istio/proxyv2`, tagged with the Istio version that the last command prints, because the Istio installation names them only when it runs.
+
+Copy each image from `docker.hops.works` to the same path in your registry, for example with [crane](https://github.com/google/go-containerregistry/blob/main/cmd/crane/README.md), and record every image that fails:
+
+```bash
+while read -r image; do
+  crane copy "docker.hops.works/${image#REGISTRY/}" "$image" || echo "$image" >> not-copied.txt
+done < images.txt
+```
+
+Check `not-copied.txt` before installing.
+It can list images that Hopsworks never starts, such as the Strimzi operator's defaults for other Kafka versions, which are not published.
+Copy any other entry again, because a pod whose image is missing cannot start.
+Mirror again from a render of the new chart version before each upgrade, because an upgrade pulls the images of the new release.
+
+Kueue, when enabled, is installed outside the Hopsworks chart with its own images and chart, which [Kueue outside the Hopsworks namespace][kueue-external] lists.
+
+## Pull-through cache on Amazon ECR { #private-registry-ecr-pull-through }
+
+On Amazon ECR, a pull through cache replaces the copy step.
+Hopsworks publishes its images to Amazon ECR Public under `public.ecr.aws/c8w3j7u1`, at the same paths as on `docker.hops.works`.
+Create a cache rule with that upstream, choosing your own repository prefix in place of `hopsworks-mirror`:
+
+```bash
+aws ecr create-pull-through-cache-rule --ecr-repository-prefix hopsworks-mirror --upstream-registry ecr-public --upstream-registry-url public.ecr.aws --upstream-repository-prefix c8w3j7u1 --region REGION --profile PROFILE
+```
+
+Use `ECR_AWS_ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/hopsworks-mirror` as `REGISTRY` when you write `values.registry.yaml`.
+Amazon ECR creates a repository and caches an image the first time a node pulls it, so the node role needs `ecr:CreateRepository` and `ecr:BatchImportUpstreamImage` on `arn:aws:ecr:REGION:ECR_AWS_ACCOUNT_ID:repository/hopsworks-mirror/*`, besides the read access of `AmazonEC2ContainerRegistryReadOnly`.
+Amazon ECR fetches the images from Amazon ECR Public itself, so the nodes pull from your registry only.
+When the nodes reach Amazon ECR through VPC endpoints, [AWS requires](https://docs.aws.amazon.com/AmazonECR/latest/userguide/vpc-endpoints.html#ecr-vpc-endpoint-considerations) an internet route from the VPC, such as a NAT gateway, for the first pull of each image through the cache.
+On a VPC without one, pull every image in the list from [Images to mirror][private-registry-images] once through the cache from a machine with internet access before installing.
+
+## Install { #private-registry-install }
+
+Install from the unpacked chart with the same values files:
+
+```bash
+helm install hopsworks ./hopsworks --namespace hopsworks --values values.aws.yaml --values values.registry.yaml --timeout=3600s
+```
+
+================================================================================
 # KEDA Autoscaling
 Source: https://docs.hopsworks.ai/latest/setup_installation/admin/keda/
 
@@ -45084,6 +46109,11 @@ Knative-mode deployments keep running through Istio as before.
 
     An upgrade to 5.3 that does not turn the feature on routes nothing differently.
     API keys are checked by `model-serving-authenticator` on both paths, so access rules stay the same.
+
+!!! warning "Required before 5.4"
+
+    Hopsworks 5.4 removes Istio, and Envoy Gateway becomes the only entry point for model deployments.
+    The 5.4 upgrade does not start while Envoy Gateway is off, so turn it on while on 5.3, as described in [5.3.x to 5.4.x][upgrade-53-to-54].
 
 ## How to enable it { #envoy-gateway-enable }
 
@@ -45496,7 +46526,7 @@ An administrator edits them in the cluster settings, on the Quotas and Rate Limi
 
 ### Per-project overrides
 
-An override per project is set on the admin page that edits the project, under LLM Gateway limits, with the same scopes, kinds and units, and applies immediately.
+An override per project is set on the `LLM gateway` tab of the admin page that edits the project, with the same scopes, kinds and units, and applies immediately.
 The value range is the same, and `-1` makes the scope unlimited for that project.
 Removing the override makes the cluster default apply again.
 The same limits are available as `llmGatewayLimits` of `projectQuotas` in `PUT /admin/projects/{id}`, and `GET /admin/projects/{id}?expand=quotas` returns the effective ones with a `source` of `DEFAULT` or `PROJECT`.
@@ -45643,6 +46673,7 @@ The access logs carry the same user, model and token counts per request, for aud
 - Knative-mode LLM deployments and Standard-mode ones behind the KEDA HTTP interceptor are not served by the LLM Gateway, because the interceptor does not wake a deployment reached this way.
   A Standard-mode deployment is behind the interceptor when it scales to zero when idle, which is the case for a minimum of 0, or when it autoscales on a request metric, concurrency or requests per second.
   They stay on their per-deployment path, and the backend says so in the deployment's status note.
+  A Knative-mode deployment [converted to Standard mode][knative-mode-deprecated] keeps at least one instance, so the LLM Gateway serves it.
 - While the LLM Gateway is published, a vLLM deployment created without a minimum number of instances gets a minimum of 1, so it does not scale to zero when idle and the LLM Gateway serves it.
   An explicit minimum of 0 is allowed, and a deployment with it is not served by the LLM Gateway.
 - Any member of the project can reach every one of its deployments through the LLM Gateway, unless a Data Owner turns it off for the project or for a deployment, as described under [Access to the LLM Gateway][llm-gateway-access].
@@ -45758,6 +46789,10 @@ Source: https://docs.hopsworks.ai/latest/setup_installation/admin/model_serving_
 # Model Serving Ingress Gateway { #model-serving-ingress-gateway }
 
 ## Introduction
+
+!!! warning "Replaced by Envoy Gateway in 5.4"
+    Hopsworks 5.4 removes the Istio ingress gateway, and the [Envoy Gateway][envoy-gateway] becomes the entry point for model deployments.
+    Prepare while on 5.3, as described in [5.3.x to 5.4.x][upgrade-53-to-54].
 
 Inference requests to KServe model deployments enter through the Istio ingress gateway, the `istio-ingressgateway` Service in the Hopsworks namespace.
 It routes on the path: `/v1/<project namespace>/<deployment>/...` reaches that deployment.
@@ -46710,7 +47745,7 @@ Before the release's resources are deleted, while the operators and Hopsworks st
 
 After the release's resources are deleted:
 
-- Secrets and ConfigMaps that services and setup Jobs created at runtime, such as webhook certificates and Consul tokens, are deleted;
+- with `hopsworks.cleanupOnUninstall.enabled`, `true` by default, Secrets and ConfigMaps that services and setup Jobs created at runtime, such as webhook certificates, Consul tokens and the semantic gateway's signing key, are deleted, and so are the ServiceAccount, Role and RoleBinding of the signing key's hook Job;
 - the data volumes listed under `wipeDataOnUninstall` are deleted, and so are the Kafka node pools;
 - the KEDA CustomResourceDefinitions are deleted;
 - the HopsFS CSIDriver object and, on OpenShift, the SCC the chart ships are deleted, as described in [HopsFS CSI Driver][hopsfs-csi-uninstall];
@@ -46777,7 +47812,7 @@ The commands assume Hopsworks is installed in the `hopsworks` namespace.
 | ------- | ---------- | ----------------- |
 | [5.0.x to 5.1.x][upgrade-50-to-51] | 1.3.x to 2.19.x | Kubernetes 1.34 or later before the upgrade, a first Helm 4 upgrade, and from 5.0.13 or earlier to 5.1.2 or later [the Trino query history][upgrade-trino-query-history]. |
 | [5.1.x to 5.2.x][upgrade-51-to-52] | 2.19.x to 3.8.0: upgrade to 5.2.1 or later | The index pass, Kafka moves to KRaft, KEDA, Kubernetes 1.37 only afterwards, Trino, from 5.2.2 [OnlineFS and the schema migrations][upgrade-changes-from-522], from 5.2.3 with your own image registry [the Envoy image of Python apps][upgrade-changes-from-523], and from 5.2.5 [Istio 1.30][upgrade-istio-130]. |
-| [5.2.x to 5.3.x][upgrade-52-to-53] | stays on 3.8.0 | [Additional prerequisites][upgrade-additional-prerequisites], [Strimzi 1.3][upgrade-strimzi-13] with central before its satellites, ICEBERG feature groups in Trino, the Filebeat registry, with your own pipelines, outputs or plugins [Logstash 9][upgrade-logstash-9], the memory of the OTLP sidecar of agent deployments, from 5.2.5 or later [Istio 1.31][upgrade-istio-131], [Envoy Gateway][upgrade-envoy-gateway] and [LLM Gateway][upgrade-llm-gateway] when turned on, with an external Kafka [the topics Hopsworks creates and deletes on it][upgrade-byok-topics], [notification topics and shared feature stores][upgrade-notification-topics], from 5.2.0 [the subset shares in Trino][upgrade-trino-subset-shares] and the OpenSearch security configuration, and from 5.2.0 or 5.2.1 [OnlineFS and the schema migrations][upgrade-changes-from-522]. |
+| [5.2.x to 5.3.x][upgrade-52-to-53] | stays on 3.8.0 | [Additional prerequisites][upgrade-additional-prerequisites], [Strimzi 1.3][upgrade-strimzi-13] with central before its satellites, ICEBERG feature groups in Trino, the Filebeat registry, with your own pipelines, outputs or plugins [Logstash 9][upgrade-logstash-9], the memory of the OTLP sidecar of agent deployments, from 5.2.5 or later [Istio 1.31][upgrade-istio-131], [Envoy Gateway][upgrade-envoy-gateway] and [LLM Gateway][upgrade-llm-gateway] when turned on, [Knative mode deprecated][upgrade-knative-mode-deprecated], with an external Kafka [the topics Hopsworks creates and deletes on it][upgrade-byok-topics], [notification topics and shared feature stores][upgrade-notification-topics], [the statistics settings][upgrade-statistics-defaults], from 5.2.0 [the subset shares in Trino][upgrade-trino-subset-shares] and the OpenSearch security configuration, and from 5.2.0 or 5.2.1 [OnlineFS and the schema migrations][upgrade-changes-from-522]. |
 
 ## Before every upgrade { #upgrade-before-every-upgrade }
 
@@ -47027,7 +48062,7 @@ An upgrade from a release that already uses Strimzi 1.3 crosses none of this.
   The setting makes that unlikely rather than impossible: nothing waits for the old operator to exit.
   If your values set `kafka.strimzi-kafka-operator.deploymentStrategy.type: Recreate`, also set `rollingUpdate: null` there, or the merged strategy is rejected.
   A single-broker cluster is unavailable while its broker is replaced, a single-controller cluster has no KRaft quorum while its controller is replaced, and OnlineFS catches up afterwards.
-- **Three new tags to mirror on an airgapped cluster**: `strimzi/operator`, `strimzi/kafka` and `strimzi/crds`, which `vendor_images.sh` lists.
+- **Three new tags to mirror on an airgapped cluster**: `strimzi/operator`, `strimzi/kafka` and `strimzi/crds`, which the [image list][private-registry-images] includes.
 - **The operator deletes pods with background propagation during a rolling update.**
   Strimzi 1.3 turns its `UseBackgroundPodDeletion` feature gate on by default, so that CNI plugins which remove a pod's network endpoints when its object is deleted, such as Cilium, no longer cut a broker off before it has shut down.
   To keep the earlier foreground deletion, set `kafka.strimzi-kafka-operator.featureGates: "-UseBackgroundPodDeletion"`.
@@ -47188,8 +48223,11 @@ On a cluster upgraded from a 6.0.0p4 database it ran 6 migrations in about a min
 
 ### Semantic layer { #upgrade-semantic-layer }
 
-5.3 adds the semantic layer, off by default.
-Before turning it on with `global._hopsworks.semanticLayer.enabled: true`:
+5.3 adds the semantic layer and installs it by default on a full platform with Trino and the nginx ingress class, see [Install or leave it out][semantic-admin-enable].
+A satellite and a release with Trino off get none of it by default.
+A release with another ingress class, such as the AWS Load Balancer Controller or the OpenShift router, gets the gateway, which serves nothing there, but not its Ingresses or the backend side; the chart's `values.aws.yaml` and `values.openshift.yaml` set `global._hopsworks.semanticLayer.enabled: false` to leave it out entirely.
+To serve the semantic layer behind such a controller, set `global._hopsworks.semanticLayer.enabled: true` and give its Ingresses that controller's settings, see [Ingress annotations][semantic-admin-ingress].
+Check the following before the upgrade, or leave the semantic layer out with `global._hopsworks.semanticLayer.enabled: false`:
 
 - **Room in `ts_1`.**
   The query history is the table `hopsworks.semantic_query` in RonDB's disk tablespace `ts_1`, which feature groups with disk columns share, and keeps each query for 30 days at about 13,000 bytes.
@@ -47197,7 +48235,16 @@ Before turning it on with `global._hopsworks.semanticLayer.enabled: true`:
 - **The 5.3 library in `python-feature-pipeline`.**
   Metric export jobs run in each project's `python-feature-pipeline` environment, and fail before they write with an older Hopsworks library there, see [Who runs an export][semantic-exports-owner].
 - **Memory for the gateway.**
-  Each of the two semantic gateway replicas takes 4 GiB, see [Memory][semantic-admin-memory].
+  The semantic gateway runs one replica of 4 GiB by default, see [Memory][semantic-admin-memory].
+- **Arrow Flight SQL from outside the cluster.**
+  The gateway's Flight SQL load balancer is off by default, so BI tools and other Flight SQL clients outside the cluster reach the gateway only after `semantic-gateway.externalLoadBalancer.enabled: true`, see [The Flight SQL load balancer][semantic-connect-admin-lb].
+  Until then, the connection details give the gateway's Service, which clients inside the cluster reach.
+  REST and GraphQL go through the Hopsworks ingress and need nothing.
+
+The upgrade runs a new pre-upgrade hook Job, `semantic-gateway-signing-init`.
+It creates the Secret `semantic-gateway-signing` with a random key when the Secret holds none, and leaves a key that exists alone.
+It touches only that Secret, and the gateway's pods start once it has run.
+With `semantic-gateway.signingKey.existingSecret` set it does not run, see [The signing key][semantic-connect-admin-signing-key].
 
 ### Kueue outside the Hopsworks namespace { #upgrade-kueue-external }
 
@@ -47580,8 +48627,7 @@ On a cluster still on Istio 1.29, the Istio install hook stops with an error bef
   The Istio ingress gateway and the cluster-local gateway restart once.
   Each rolls out its new pod before it stops the old one.
 - **Your own image registry.**
-  Mirror `istio/pilot` and `istio/proxyv2` at `1.31.4` before the upgrade.
-  The chart's `vendor_images.sh` lists both.
+  Mirror `istio/pilot` and `istio/proxyv2` at `1.31.4` before the upgrade, as [Images to mirror][private-registry-images] describes.
 - **Sidecars you injected yourself.**
   The chart injects no Istio sidecar.
   A workload you gave an Istio sidecar keeps its 1.30 proxy until it restarts, so restart it after the upgrade.
@@ -47591,6 +48637,91 @@ On a cluster still on Istio 1.29, the Istio install hook stops with an error bef
   Do not run `helm upgrade`, or an ArgoCD sync, with a release older than 5.2.5 afterwards: its hook installs Istio 1.29 over 1.31, a downgrade Istio does not support.
   To go back entirely, restore the backup on a new cluster, as described in [New Cluster Restore][new-cluster-restore].
   An in-place restore does not apply here, since it runs `helm upgrade` with the release of the backup, whose Istio install hook then runs over Istio 1.31.
+
+### Statistics settings { #upgrade-statistics-defaults }
+
+5.3 adds cluster settings for statistics jobs.
+Their defaults keep the behaviour of 5.2, so a cluster that changes none of them computes and keeps statistics as before.
+
+- **Feature monitoring covers up to 32 features.**
+  `feature_monitoring_max_num_features` rises from 15 to 32, so one configuration can monitor more features, and its runs take longer.
+  Set `hopsworks.variables.feature_monitoring_max_num_features: "15"` to keep the old limit.
+- **Statistics jobs can be sized on their own.**
+  `statistics_job_driver_memory`, `statistics_job_executor_memory`, `statistics_job_executor_cores` and `statistics_job_max_executors` size statistics jobs separately from other Spark jobs, existing ones included, and are empty by default.
+  Memory and cores only raise what a job already has, so resources given to a job in the Jobs UI are kept, while the maximum executors replaces the job's.
+  `statistics_job_bytes_per_executor` scales the executors of each run with the size of the table, up to the job's maximum, and is off at its default of 0.
+- **Old statistics can be pruned.**
+  `statistics_retention_rows_per_entity` keeps the newest statistics of each feature group and feature view up to that number, and keeps all of them at its default of 0.
+- **Incremental statistics are opt-in.**
+  With `statistics_incremental_enabled`, a commit's statistics are merged into the previous ones instead of profiling the whole table again, for feature groups that do not choose for themselves.
+  `statistics_incremental_allowed` turns incremental statistics off for the whole cluster, and `statistics_incremental_full_profile_every` sets how many commits are merged before a full profile runs again (50 by default).
+- **Change them in the values file.**
+  The chart writes its variables on every upgrade, so a change made only on the admin variables page is undone by the next upgrade.
+
+!!! warning "Feature monitoring during the rollout"
+
+    The Hopsworks workers are replaced one at a time, and statistics written in the new format are incomplete when a worker still on 5.2 reads them.
+    A feature monitoring run during the rollout can therefore fail, miss a shift or report one that is not there.
+    After the upgrade, run again every feature monitoring configuration that ran during the rollout.
+
+### Storage initializer of model deployments { #upgrade-storage-initializer }
+
+The storage initializer, the init container that copies a downloading model deployment's files, now has limits of 2 cores and 2 GiB instead of 1 core and 1 GiB, because the copy was CPU-bound.
+A pod's limits count its largest init container, so a small predictor can now exceed a `limits.cpu` or `limits.memory` ResourceQuota or a LimitRange.
+Set `kserve.storageInitializer.resources` to keep the old limits.
+
+### Knative mode is deprecated { #upgrade-knative-mode-deprecated }
+
+!!! warning "Knative mode is deprecated"
+    Hopsworks 5.4 removes Knative and Istio.
+    Prepare while on 5.3, as described in [5.3.x to 5.4.x][upgrade-53-to-54].
+
+- **New deployments run in Standard mode.**
+  The UI no longer offers Knative mode, and creating a Knative-mode deployment from the Python SDK or the REST API fails with error `240082`.
+- **Existing Knative-mode deployments keep working** until their owners [convert them to Standard mode][knative-mode-deprecated].
+  `helm upgrade` prints how many of them are running.
+- **To allow new Knative-mode deployments until 5.4**, set `hopsworks.variables.kube_knative_mode_allowed: "true"` in your values file.
+  The chart writes the value on every upgrade, so a change in the admin UI lasts only until the next one.
+
+## 5.3.x to 5.4.x { #upgrade-53-to-54 }
+
+!!! info "5.4 is not released yet"
+    This section lists what to prepare on 5.3.
+
+5.4 removes Knative and Istio: model deployments run in Standard mode only, and Envoy Gateway replaces the Istio ingress gateway.
+The 5.4 upgrade does not start while Envoy Gateway is off or a Knative-mode deployment is running.
+
+1. **Enable Envoy Gateway**, as described in [Envoy Gateway][upgrade-envoy-gateway].
+2. **Convert the running Knative-mode deployments.**
+    List them, with `<namespace>` the Hopsworks namespace:
+
+    ```bash
+    kubectl get isvc -A -l serving.hops.works/id,hopsworks-deployment=<namespace> -o json | jq -r '.items[] | select((.status.deploymentMode // .metadata.annotations["serving.kserve.io/deploymentMode"] // "Knative") | test("^(Knative|Serverless)$")) | .metadata.namespace + "/" + .metadata.name'
+    ```
+
+    Their owners [convert each one][knative-mode-deprecated], which restarts it once.
+    Stopped Knative-mode deployments can wait: the 5.4 upgrade converts them.
+3. **Check the HTTPS certificate.**
+    With `kserve.knative.https.enabled`, the Secret named in `kserve.knative.https.credentialsName` must have the type `kubernetes.io/tls`, the only type Envoy Gateway accepts:
+
+    ```bash
+    kubectl get secret -n <namespace> <credentialsName> -o jsonpath='{.type}'
+    ```
+
+4. **Keep the gateway address.**
+    Node ports stay the same, but the upgrade releases the load balancer address of the Istio ingress gateway.
+    To keep it, reserve it before the upgrade:
+
+    - With a cloud load balancer, reserve it with your provider.
+    - With MetalLB, reserve it, for example in an `IPAddressPool` with `autoAssign: false`, and request it for the Envoy Gateway Service with MetalLB's `loadBalancerIPs` annotation in `kserve.envoyGateway.service.annotations`.
+
+    Otherwise, plan to move your DNS records to the new address.
+5. **Move what points at the Istio gateway.**
+    Anything outside the chart that names `istio-ingressgateway`, such as an OpenShift Route or a DNS record, moves to the Envoy Gateway Service `kserve-ingress-gateway`.
+    On AWS with unmanaged load balancers, the target groups in `global.unmanagedLoadBalancers.istio` move to the Envoy Gateway Service; the 5.4 upgrade notes give the steps.
+6. **Check your clients.**
+    Envoy Gateway drops request headers whose names contain an underscore, see [Headers with underscores][upgrade-envoy-gateway], and a request path must name the project exactly, see [Expose the Gateway directly][envoy-gateway].
+    Hopsworks and the Python clients cache the inference endpoint until they restart.
 
 ## Changes from 5.2.2 { #upgrade-changes-from-522 }
 
@@ -47656,7 +48787,7 @@ They apply to an upgrade from 5.1.x to 5.2.3 or later, and from 5.2.0, 5.2.1 or 
 
 Python apps pull their Envoy sidecar from `global._hopsworks.imageRegistry`, as `<registry>/envoyproxy/envoy:<tag>` with the tag in `hopsworks.variables.python_app_envoy_image_version` (`v1.38.0`); before, the chart did not set the backend's `python_app_envoy_image`, so clusters pulled `envoyproxy/envoy:v1.38.0` from Docker Hub.
 The default registry, `docker.hops.works`, has the image.
-A cluster whose `global._hopsworks.imageRegistry` is its own registry mirrors `envoyproxy/envoy:v1.38.0` there, at the path `envoyproxy/envoy`, before the upgrade, or its Python apps cannot start; the chart's `vendor_images.sh` does not list the image.
+A cluster whose `global._hopsworks.imageRegistry` is its own registry mirrors `envoyproxy/envoy:v1.38.0` there, at the path `envoyproxy/envoy`, before the upgrade, or its Python apps cannot start.
 The chart now writes `python_app_envoy_image` on every upgrade, replacing a value set by hand, so a cluster that pointed it at another image mirrors that image as above.
 
 ## Changes from 5.2.5 { #upgrade-changes-from-525 }
@@ -47675,8 +48806,7 @@ Istio 1.30 supports Kubernetes 1.32 to 1.36, and Istio supports the 1.30 release
   The Istio ingress gateway and the cluster-local gateway restart once.
   Each rolls out its new pod before it stops the old one.
 - **Your own image registry.**
-  Mirror `istio/pilot` and `istio/proxyv2` at `1.30.8` before the upgrade.
-  The chart's `vendor_images.sh` lists both.
+  Mirror `istio/pilot` and `istio/proxyv2` at `1.30.8` before the upgrade, as [Images to mirror][private-registry-images] describes.
 - **Sidecars you injected yourself.**
   The chart injects no Istio sidecar.
   A workload you gave an Istio sidecar keeps its 1.29 proxy until it restarts, so restart it after the upgrade.
@@ -48371,7 +49501,7 @@ The upgrade refuses, or waits until it times out, on each problem they find.
 Then:
 
 - **Airgapped clusters** mirror three images with the rest: `strimzi/operator`, `strimzi/kafka` and `strimzi/crds`.
-  The chart's `vendor_images.sh` includes them; nothing is fetched from the internet during the upgrade.
+  The [image list][private-registry-images] includes them; nothing is fetched from the internet during the upgrade.
 - **A satellite cluster that shares the central operator** is upgraded before central.
   The CRD conversion re-stores every Kafka resource on the Kubernetes cluster, and a satellite still on ZooKeeper would lose its ZooKeeper configuration in the process.
   The conversion refuses while any other Kafka is not on KRaft, so the wrong order fails safely, but it blocks central's upgrade until the satellite is done.
@@ -48516,7 +49646,7 @@ The same cut applies the other way round for a [bring-your-own Kafka cluster][ex
 # Kueue outside the Hopsworks namespace
 Source: https://docs.hopsworks.ai/latest/setup_installation/admin/kueue_external/
 
-# Operator Notes: Kueue Outside the Hopsworks Namespace
+# Operator Notes: Kueue Outside the Hopsworks Namespace { #kueue-external }
 
 Administrative reference for cluster operators who run Kueue with Hopsworks, install a Hopsworks release that uses Kueue 0.20 (a 5.2.x patch release, or 5.3), or upgrade to one.
 
@@ -49536,7 +50666,9 @@ To configure Authentication methods click on your name in the top right corner o
 On the **Authentication configuration** page you can configure how users authenticate.
 Each control is applied as soon as you change it, there is no save step.
 
-1. **Hopsworks accounts**: when checked, users can register and log in with credentials managed by Hopsworks itself.
+1. **Hopsworks accounts**: users log in with credentials managed by Hopsworks itself.
+   The card shows _On_ unless password sign-in is turned off with the `disable_password_login` variable, which is not changed from this page.
+   Registration is controlled separately: users can register themselves unless `disable_registration` is set, and `disable_registration_ui` only hides the registration form from the login page.
 2. **TOTP Two-factor Authentication**: can be _disabled_, _optional_ or _mandatory_.
    If set to mandatory all users are required to set up two-factor authentication when registering.
 
@@ -49544,11 +50676,12 @@ Each control is applied as soon as you change it, there is no save step.
        If two-factor is set to _mandatory_ on a cluster with preexisting users all users will need to go through lost device recovery step to enable two-factor.
        So consider setting it to _optional_ first and allow users to enable it before setting it to mandatory.
 
-3. **OAuth2**: if your organization already have an identity management system compatible with [OpenID Connect (OIDC)](https://openid.net/connect/) you can configure Hopsworks to use your identity provider by ticking the **OAuth** checkbox.
-   After enabling OAuth you can register your identity provider by clicking on **Add Identity Provider** button.
+3. **OAuth2**: if your organization already have an identity management system compatible with [OpenID Connect (OIDC)](https://openid.net/connect/) you can configure Hopsworks to use your identity provider by turning on the **OAuth** switch.
+   After enabling OAuth you can register your identity provider by clicking **Add identity provider**.
+   Registered providers are listed in a table, where the pencil and trash icons edit or remove one.
    See [Create client](./oauth2/create-client.md) for details.
 4. **LDAP/Kerberos**: if your organization is using LDAP or Kerberos to manage users and services you can configure Hopsworks to use it as the user management system.
-   You can enable LDAP/Kerberos by ticking the **LDAP/Kerberos** checkbox and choosing LDAP or Kerberos.
+   You can enable it by turning on the **LDAP / Kerberos** switch and choosing LDAP or Kerberos.
    For more information on how to configure LDAP and Kerberos see [Configure LDAP](./ldap/configure-ldap.md) and [Configure Kerberos](./ldap/configure-krb.md).
 
 <figure>
@@ -49556,8 +50689,7 @@ Each control is applied as soon as you change it, there is no save step.
   <figcaption>Setup Authentication Methods</figcaption>
 </figure>
 
-In the figure above we see a cluster with Hopsworks accounts enabled, Two-factor authentication disabled, and both
-OAuth and LDAP/Kerberos unchecked.
+In the figure above, two-factor authentication is disabled, OAuth is on with one identity provider, and LDAP/Kerberos is off.
 
 ================================================================================
 # Register an Identity Provider
@@ -49576,7 +50708,7 @@ Acquired a _client id_ and a _client secret_ from your identity provider.
 
 ### Step 1: Register a client
 
-After acquiring the _client id_ and _client secret_ create the client in Hopsworks by [enabling OAuth2](../auth.md) and clicking on _add another identity provider_ in the [Authentication configuration page](../auth.md).
+After acquiring the _client id_ and _client secret_ create the client in Hopsworks by [enabling OAuth2](../auth.md) and clicking on _Add identity provider_ in the [Authentication configuration page](../auth.md).
 Then set base uri of your identity provider in _Connection URL_ give a name to your identity provider (the name will be used in the login page as an alternative login method) and set the _client id_ and _client secret_ in their respective fields, as shown in the figure below.
 
 <figure>
@@ -49956,18 +51088,18 @@ See [Server Configuration for LDAP](./configure-server.md#step-1-server-configur
 ### Step 1: Enable LDAP
 
 After configuring the server you can configure Authentication methods by clicking on your name in the top right corner of the navigation bar and choosing *Cluster Settings* from the dropdown menu.
-On the *Authentication* page, found under *Security & Access* in the left sidebar of **Cluster Settings**, you can enable LDAP by clicking on the LDAP checkbox.
+On the *Authentication* page, found under *Security & Access* in the left sidebar of **Cluster Settings**, you can enable LDAP by turning on the **LDAP / Kerberos** switch and choosing **LDAP**.
 
-If LDAP/Kerberos checkbox is not checked make sure that you configured your application server and enable it by clicking on the checkbox.
+If the switch is off, make sure that you configured your application server, then turn it on.
 
 <figure>
-  <img src="../../../../assets/images/admin/auth-config.png" alt="Authentication config" />
+  <img src="../../../../assets/images/admin/ldap/auth-config-ldap.png" alt="The Authentication page with LDAP sign-in turned on" />
   <figcaption>Setup Authentication Methods</figcaption>
 </figure>
 
 ### Step 2: Edit configuration
 
-Finally, click on edit configuration and fill in the attributes.
+Finally, click the pencil icon in the LDAP row and fill in the attributes.
 
 <figure>
   <img src="../../../../assets/images/admin/ldap/configure-ldap.png" alt="LDAP config" />
@@ -50036,19 +51168,18 @@ See [Server Configuration for Kerberos](./configure-server.md#step-2-server-conf
 ### Step 1: Enable Kerberos
 
 After configuring the server you can configure Authentication methods by clicking on your name in the top right corner of the navigation bar and choosing *Cluster Settings* from the dropdown menu.
-On the *Authentication* page, found under *Security & Access* in the left sidebar of **Cluster Settings**, you can enable Kerberos by clicking on the Kerberos checkbox.
+On the *Authentication* page, found under *Security & Access* in the left sidebar of **Cluster Settings**, you can enable Kerberos by turning on the **LDAP / Kerberos** switch and choosing **Kerberos**.
 
-If LDAP/Kerberos checkbox is not checked, make sure that you configured your application server and enable it by
-clicking on the checkbox.
+If the switch is off, make sure that you configured your application server, then turn it on.
 
 <figure>
-  <img src="../../../../assets/images/admin/ldap/auth-config-krb.png" alt="Authentication config" />
+  <img src="../../../../assets/images/admin/ldap/auth-config-krb.png" alt="The Authentication page with Kerberos sign-in turned on" />
   <figcaption>Setup Authentication Methods</figcaption>
 </figure>
 
 ### Step 2: Edit configuration
 
-Finally, click on edit configuration and fill in the attributes.
+Finally, click the pencil icon in the Kerberos row and fill in the attributes.
 
 <figure>
   <img src="../../../../assets/images/admin/ldap/configure-krb.png" alt="Kerberos config" />
@@ -51492,15 +52623,15 @@ Saving needs no redeploy: every Hopsworks instance derives its schedule from the
 ### A single project's allowance
 
 The cluster-wide maximum is a ceiling on the deployment; how many catalogs any one project may create is set per project.
-Open **Cluster Settings** → **Projects**, click **Edit configuration** on the project's row, and scroll to **Query engine**, **Trino catalogs**, just after the Kafka topic quota.
+Open **Cluster Settings** → **Projects**, click the pencil icon on the project's row, and on the **Quotas** tab find **Trino catalogs** in the **Query engine** panel, just after the Kafka topic quota.
 
 <figure>
   <img src="../../../assets/images/admin/trino/project-catalog-limit.png" alt="A project's Trino catalog allowance" />
-  <figcaption>The project's catalog count, its own limit, and the unlimited checkbox</figcaption>
+  <figcaption>The project's catalog count, its own limit, and the Unlimited checkbox</figcaption>
 </figure>
 
 A new project starts on the cluster default (`trino_catalog_max_per_project`, 10), so raising one project here raises that project only.
-Checking **unlimited** removes the project's own bound, leaving only the cluster-wide ceiling; a limit of 0 blocks new catalogs in the project.
+Checking **Unlimited** removes the project's own bound, leaving only the cluster-wide ceiling; a limit of 0 blocks new catalogs in the project.
 Both bounds apply to a create: the project must be under its own allowance, and the cluster must be under the ceiling.
 
 ### The wait for a quiet moment
@@ -52229,32 +53360,52 @@ Source: https://docs.hopsworks.ai/latest/setup_installation/admin/semantic_layer
 # Semantic Layer { #semantic-admin }
 
 The Semantic Layer compiles metric definitions written in YAML over feature groups, answers metric queries over REST and Arrow Flight SQL, and answers metadata over GraphQL.
-This page turns it on and configures it; [Semantic Layer Guides][semantic-layer-guides] cover its use.
+This page covers what it installs and how to configure it; [Semantic Layer Guides][semantic-layer-guides] cover its use.
 
-## Turn it on { #semantic-admin-enable }
+## Install or leave it out { #semantic-admin-enable }
 
-```yaml
-global:
-  _hopsworks:
-    semanticLayer:
-      enabled: true
-```
-
-`global._hopsworks.semanticLayer.enabled`, `false` by default, installs:
+The semantic layer is:
 
 - the `semantic-gateway` subchart, the semantic gateway;
 - the Ingresses that route `/semantic-layer/` and `/semantic-layer/api/graphql` on the Hopsworks ingress hosts to the gateway;
 - the backend and UI side: the cluster variable `semantic_layer_enabled` is `true`, and projects show **Semantic Layer** in their sidebar.
 
+`global._hopsworks.semanticLayer.enabled` decides whether a release has it:
+
+| Value | The release has the semantic layer |
+| --- | --- |
+| Unset (`null`), the default | On a full platform with Trino and the nginx ingress class: `global._hopsworks.full_platform` and `global._hopsworks.trino.enabled` are not `false`, and `hopsworks.ingress.ingressClassName` is `nginx` or unset. |
+| `true` | Always. The install fails on a satellite (`global._hopsworks.full_platform: false`), which has no backend for it, and with Trino off, since the gateway runs its queries on Trino. |
+| `false` | Never. |
+
+A satellite and a release with Trino off install none of it by default.
+With another ingress class, such as the AWS Load Balancer Controller or the OpenShift router, the default leaves out the Ingresses and the backend side, while the gateway subchart, which cannot read the ingress class, is still installed and serves nothing.
+The chart's `values.aws.yaml` and `values.openshift.yaml` therefore set `false`.
+To serve the semantic layer behind another controller, set `true` and give the Ingresses that controller's settings, see [Ingress annotations][semantic-admin-ingress].
+
+To leave the semantic layer out:
+
+```yaml
+global:
+  _hopsworks:
+    semanticLayer:
+      enabled: false
+```
+
 While it is off, the semantic layer endpoints answer 404 `SEMANTIC_LAYER_DISABLED`.
-Queries run on Trino, so Trino must be installed too.
+
+### Ingress annotations { #semantic-admin-ingress }
+
+`hopsworks.semanticLayer.ingress.annotations` and `hopsworks.semanticLayer.graphqlIngress.annotations` apply over `hopsworks.ingress.annotations`, so the main Ingress's access rules and load balancer settings hold for the semantic layer too.
+Their defaults are nginx's: the gateway serves TLS only, so `backend-protocol: HTTPS`, read and send timeouts of 360 seconds, which a JSON answer needs since it sends nothing until its query ends, and a request body of at most 1 MiB.
+With another ingress class, set that controller's equivalents there, its backend TLS setting first: for the AWS Load Balancer Controller, `alb.ingress.kubernetes.io/backend-protocol: HTTPS`; for the OpenShift router, `route.openshift.io/termination: reencrypt`.
 
 ## What runs where { #semantic-admin-components }
 
 | Component | Runs in | Does |
 | --- | --- | --- |
 | Control plane | Hopsworks (Payara) | Semantic projects and their builds, sessions for the gateway, the definitions editor, tags, metric exports and their jobs, the query history and its cleaner. Its tables are in the `hopsworks` database in RonDB, and the compiled definitions of each build are files in the project's directory in HopsFS, which only Hopsworks reads and writes and which go with the project. |
-| Semantic gateway | The Deployment `semantic-gateway`, 2 replicas by default | Compiles the definitions for the control plane, plans metric queries, runs them on Trino as the caller, and serves REST, GraphQL, Arrow Flight SQL, the BI tables and the result cache. It keeps no state of its own beyond memory. |
+| Semantic gateway | The Deployment `semantic-gateway`, 1 replica by default; set `semantic-gateway.replicas` to 2 or more to keep queries running through a pod's restart | Compiles the definitions for the control plane, plans metric queries, runs them on Trino as the caller, and serves REST, GraphQL, Arrow Flight SQL, the BI tables and the result cache. It keeps no state of its own beyond memory. |
 | Trino | The `trino` chart | Runs the SQL the gateway plans, as the caller's own Trino user, see [Who a query runs as][semantic-overview-identity]. |
 | Export jobs | Python jobs in each project, in the `python-feature-pipeline` environment | Write saved queries into feature groups, see [Metric exports][semantic-exports]. |
 | Superset | The `superset` chart | Dashboards from metrics: each member's database connection of a project reads the gateway's Arrow Flight SQL port inside the cluster, at `semantic-gateway.<namespace>.svc.cluster.local:18446`, see [Dashboards in Superset][semantic-superset-dashboards]. |
@@ -52264,7 +53415,7 @@ The gateway's Service, `semantic-gateway`, has four ports:
 | Port | Name | Serves |
 | --- | --- | --- |
 | 18443 | `public` | REST and GraphQL, behind the Ingresses. |
-| 18444 | `internal` | Hopsworks' compile and validation requests; not for clients. |
+| 18444 | `internal` | Hopsworks' compile and validation requests; not for clients. It asks for a client certificate of the cluster's CA and answers 403 to any but Payara's, `hopsworks.glassfish.service.<consul domain>`. |
 | 18445 | `metrics` | Prometheus metrics, in the release namespace. |
 | 18446 | `flight` | Arrow Flight SQL. The Service keeps this port when `flightPort`, the port of the container and of the external load balancer, changes. |
 
@@ -52285,8 +53436,6 @@ semantic-gateway:
   externalLoadBalancer:
     enabled: true
     hostname: semantic.hopsworks.example.com
-  signingKey:
-    existingSecret: semantic-gateway-signing-key
 
 hopsworks:
   variables:
@@ -52307,7 +53456,7 @@ Under `semantic-gateway:`:
 
 | Value | Default | Meaning |
 | --- | --- | --- |
-| `replicas` | `2` | Replicas of the Deployment; not rendered while `hpa.enabled`, which then uses it as its minimum. |
+| `replicas` | `1` | Replicas of the Deployment; not rendered while `hpa.enabled`, which then uses it as its minimum. |
 | `hpa.enabled`, `hpa.maxReplicas`, `hpa.targetCPUUtilizationPercentage` | `false`, `4`, `80` | Autoscale the Deployment on CPU. |
 | `podDisruptionBudget.enabled`, `podDisruptionBudget.minAvailable` | `true`, `1` | Keep replicas available through voluntary disruptions, with more than one replica. |
 | `resources` | requests `500m`, `4Gi`; limits `2`, `4Gi` | Resources of the gateway container, see [Memory][semantic-admin-memory]. |
@@ -52327,8 +53476,9 @@ Under `semantic-gateway:`:
 | `handleTtlSeconds` | `3600` | Seconds a Flight ticket or prepared statement stays valid. |
 | `cache.maxBytes`, `cache.ttlSeconds`, `cache.entryMaxBytes`, `cache.dataVersionSeconds` | `268435456`, `300`, `8388608`, `30` | The [result cache][semantic-result-cache-admin]. |
 | `arrowMemoryLimitBytes` | `null` | Arrow buffers a replica's queries hold at once; null is half the JVM heap. |
-| `signingKey.existingSecret` | `null` | The Secret with the handle signing key, see [The signing key][semantic-connect-admin-signing-key]. |
-| `externalLoadBalancer.*` | | The Flight SQL load balancer: `enabled`, `class`, `annotations`, `managed`, `nodePort`, `nodeSelector`, `hostname`. |
+| `signingKey.existingSecret` | `null` | The Secret with the handle signing key; null has a hook Job create it, see [The signing key][semantic-connect-admin-signing-key]. |
+| `ttlSecondsAfterFinished` | `null` | Seconds the signing key's hook Job is kept after it finishes; null is the global Job TTL. |
+| `externalLoadBalancer.*` | `enabled: false` | The Flight SQL load balancer, off unless enabled: `enabled`, `class`, `annotations`, `managed`, `nodePort`, `nodeSelector`, `hostname`. |
 | `networkPolicy.enabled` | `true` | The gateway's NetworkPolicy, which limits the gateway's traffic and who reaches each of its ports. Keep it on, on a CNI that enforces NetworkPolicies. |
 | `image.registry`, `image.repository`, `image.tag`, `image.pullPolicy` | `null`, `hopsworks/semantic-gateway`, `null`, `null` | The gateway image; the tag defaults to the chart's version. |
 | `nodeSelector`, `tolerations`, `topologySpreadConstraint` | empty | Scheduling; the global values apply when empty. |
@@ -52379,7 +53529,7 @@ The chart writes them on every install and upgrade, so a change made on the [Clu
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `semantic_layer_enabled` | `"false"` | The backend and UI side; `true` while `global._hopsworks.semanticLayer.enabled`. Set it alone only for a gateway that runs elsewhere. |
+| `semantic_layer_enabled` | `"true"` | The backend and UI side; `true` while `global._hopsworks.semanticLayer.enabled`, `false` otherwise. Set it alone only for a gateway that runs elsewhere. |
 | `semantic_layer_gateway_internal_url` | `""` | Where Payara sends compile requests; empty is the gateway's internal port in the release namespace. |
 | `semantic_layer_gateway_cluster_url` | `""` | The gateway's public port for callers inside the cluster; empty is the `semantic-gateway` Service in the release namespace. |
 | `superset_semantic_enabled` | `"true"` | The members' semantic connections in Superset and dashboards from metrics. |
@@ -52733,6 +53883,10 @@ The exception applies to pods labelled `serving.hops.works/model-server: triton`
 
 ## Knative
 
+!!! warning "Knative mode is deprecated"
+    Hopsworks 5.4 removes Knative mode, so this section applies only to existing Knative-mode deployments.
+    Their owners can [convert them to Standard mode][knative-mode-deprecated].
+
 In Knative mode, Knative resolves the image tag to a digest before it creates a revision.
 When the Knative controller cannot resolve the tag, for example because it cannot authenticate to the registry or verify its TLS certificate, the deployment fails before a pod is created.
 Registries listed in `registries-skipping-tag-resolving` of Knative's `config-deployment` ConfigMap skip this step.
@@ -52762,7 +53916,8 @@ An image that meets these requirements needs no Hopsworks components: Hopsworks 
 
 - **Ports.** HTTP on 8080 (Open Inference Protocol REST), gRPC on 9000 (Open Inference Protocol gRPC, served as h2c), and Prometheus metrics on 8002 at `/metrics`.
   In Standard mode, Prometheus scrapes port 8002.
-- **Model files.** Before Triton starts, Hopsworks copies the model version's files to `/mnt/models/<deployment-name>/`, so the model repository holds one model named after the deployment.
+- **Model files.** The model version's files are at `/mnt/models/<deployment-name>/`, so the model repository holds one model named after the deployment.
+  With the `MOUNT` [loading strategy][loading-strategy-guide] they are mounted read-only from HopsFS; with `DOWNLOAD` Hopsworks copies them there before Triton starts.
 - **User.** With `global._hopsworks.securityContextEnabled`, the container runs as a non-root user (UID 1000, GID 1000) with privilege escalation disabled and all capabilities dropped, so the image must work as that user.
 - **Shared memory.** Hopsworks mounts a memory-backed volume at `/dev/shm`, used by the Python backend; it counts against the memory of the deployment.
 - **Backends.** The image contains the Triton backends the models need, for example `onnxruntime`, `pytorch`, `tensorrt`, `openvino` or `python`.
@@ -53246,6 +54401,20 @@ Source: https://docs.hopsworks.ai/latest/setup_installation/common/helm_chart_va
 # RonDB values { #helm-values-rondb }
 
 Values under `rondb` configure RonDB, the online feature store database, installed from the RonDB Helm chart.
+
+<!-- BEGIN GENERATED VALUES -->
+
+_The values table is generated from the Hopsworks Helm chart during the documentation build._
+
+<!-- END GENERATED VALUES -->
+
+================================================================================
+# semantic-gateway
+Source: https://docs.hopsworks.ai/latest/setup_installation/common/helm_chart_values/semantic-gateway/
+
+# Semantic gateway values { #helm-values-semantic-gateway }
+
+Values under `semantic-gateway` configure the service that runs semantic layer queries on Trino and serves the REST, Arrow Flight SQL and GraphQL APIs.
 
 <!-- BEGIN GENERATED VALUES -->
 
@@ -56796,6 +57965,7 @@ Do not hand-edit the tables below; regenerate them instead.
 | 240077 | `SERVING_SHARING_NOT_SUPPORTED` | 400 BAD_REQUEST | Only a vLLM deployment served by the LLM gateway can be shared with other projects. |
 | 240078 | `SERVING_SHARING_DISABLED` | 400 BAD_REQUEST | Sharing deployments with other projects is disabled on this cluster. |
 | 240079 | `SERVING_SHARING_PROJECT_NOT_FOUND` | 404 NOT_FOUND | The project to share the deployment with does not exist or is the owner of the deployment. |
+| 240082 | `KNATIVE_MODE_DEPRECATED` | 400 BAD_REQUEST | Knative mode is deprecated: new deployments and mode changes must use Standard mode |
 
 ## InferenceErrorCode
 

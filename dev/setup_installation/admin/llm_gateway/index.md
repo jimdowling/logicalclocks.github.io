@@ -233,7 +233,7 @@ An administrator edits them in the cluster settings, on the Quotas and Rate Limi
 
 ### Per-project overrides
 
-An override per project is set on the admin page that edits the project, under LLM Gateway limits, with the same scopes, kinds and units, and applies immediately.
+An override per project is set on the `LLM gateway` tab of the admin page that edits the project, with the same scopes, kinds and units, and applies immediately.
 The value range is the same, and `-1` makes the scope unlimited for that project.
 Removing the override makes the cluster default apply again.
 The same limits are available as `llmGatewayLimits` of `projectQuotas` in `PUT /admin/projects/{id}`, and `GET /admin/projects/{id}?expand=quotas` returns the effective ones with a `source` of `DEFAULT` or `PROJECT`.
@@ -380,6 +380,7 @@ The access logs carry the same user, model and token counts per request, for aud
 - Knative-mode LLM deployments and Standard-mode ones behind the KEDA HTTP interceptor are not served by the LLM Gateway, because the interceptor does not wake a deployment reached this way.
   A Standard-mode deployment is behind the interceptor when it scales to zero when idle, which is the case for a minimum of 0, or when it autoscales on a request metric, concurrency or requests per second.
   They stay on their per-deployment path, and the backend says so in the deployment's status note.
+  A Knative-mode deployment [converted to Standard mode][knative-mode-deprecated] keeps at least one instance, so the LLM Gateway serves it.
 - While the LLM Gateway is published, a vLLM deployment created without a minimum number of instances gets a minimum of 1, so it does not scale to zero when idle and the LLM Gateway serves it.
   An explicit minimum of 0 is allowed, and a deployment with it is not served by the LLM Gateway.
 - Any member of the project can reach every one of its deployments through the LLM Gateway, unless a Data Owner turns it off for the project or for a deployment, as described under [Access to the LLM Gateway][llm-gateway-access].
